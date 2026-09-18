@@ -81,9 +81,20 @@ function createWindow(): void {
         const summary1 = await js('window.api.getCacheSummary()')
         const download2 = await js(`window.api.downloadData(${JSON.stringify(range)})`)
 
-        // ---- 3. UI journey: modal → download → Vela chart ----
-        // Dates 2024-01-02..03 are cached by download#1 above, so the session
-        // download resolves instantly (cache hit) and the chart mounts fast.
+        // ---- 3. Batch download over IPC (session behavior: many timeframes) ----
+        // Pre-caches m15/h1/d1 for 01-02..04 (superset of the UI's 02..03), so
+        // the UI journey below only needs network for the remaining timeframes.
+        const batchReq = {
+          symbol: 'eurusd',
+          timeframes: ['m15', 'h1', 'd1'],
+          startDate: '2024-01-02',
+          endDate: '2024-01-04'
+        }
+        const batch = await js(`window.api.downloadData(${JSON.stringify(batchReq)})`)
+        const summary2 = await js('window.api.getCacheSummary()')
+
+        // ---- 4. UI journey: modal → batch download → Vela chart → tf switch ----
+        const logsBefore = consoleLogs.length
         const ui = await js(`(async () => {
           const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           const btn = (txt) =>
@@ -96,8 +107,25 @@ function createWindow(): void {
             Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
             el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
           };
-          const from = document.querySelector('#ns-date-from');
-          const to = document.querySelector('#ns-date-to');
+          const samplePainted = () => {
+            try {
+              for (const c of document.querySelectorAll('canvas')) {
+                const ctx = c.getContext('2d');
+                if (!ctx) continue;
+                const { width, height } = c;
+                if (width < 2 || height < 2) continue;
+                const d = ctx.getImageData(0, 0, width, height).data;
+                for (let p = 0; p < d.length; p += 40) {
+                  if (Math.abs(d[p] - d[0]) + Math.abs(d[p + 1] - d[1]) + Math.abs(d[p + 2] - d[2]) > 60) {
+                    return { ok: true, diff: (p / 40) + 1 };
+                  }
+                }
+              }
+              return { ok: false };
+            } catch {
+              return { ok: 'sampling-error' };
+            }
+          };
           const diag = () => ({
             text: document.body.textContent.slice(0, 300),
             ids: [...document.querySelectorAll('[id]')].map((el) => el.id),
@@ -115,36 +143,61 @@ function createWindow(): void {
           const start = btn('Start Session');
           if (!start || start.disabled) return { ok: false, step: 'start-disabled' };
           start.click();
-          for (let i = 0; i < 40; i++) {
+          for (let i = 0; i < 60; i++) {
             const canvases = document.querySelectorAll('canvas').length;
-            if (canvases > 0) {
-              // Sample a 2D canvas: pixels differing from its background corner
-              // prove the workspace actually painted (axis text/candles), not a
-              // blank surface.
-              let painted = { ok: false };
-              try {
-                for (const c of document.querySelectorAll('canvas')) {
-                  const ctx = c.getContext('2d');
-                  if (!ctx) continue;
-                  const { width, height } = c;
-                  if (width < 2 || height < 2) continue;
-                  const d = ctx.getImageData(0, 0, width, height).data;
-                  for (let p = 0; p < d.length; p += 40) {
-                    if (Math.abs(d[p] - d[0]) + Math.abs(d[p + 1] - d[1]) + Math.abs(d[p + 2] - d[2]) > 60) {
-                      painted = { ok: true, diff: (p / 40) + 1 };
-                      break;
-                    }
-                  }
-                  if (painted.ok) break;
+            if (canvases > 0 && document.body.textContent.includes('Playback')) {
+              const paintedBefore = samplePainted();
+              // Switch the chart to 15m via the workspace topbar. Vela
+              // formats the active timeframe with a suffix ('1m') and hides
+              // the other options in a popover: click the tf button, then the
+              // '15m' option. The "wanderlust" provider must serve the new
+              // timeframe's bars from the session store.
+              const tfButton = () =>
+                [...document.querySelectorAll('button')].find((b) => {
+                  const t = (b.textContent ?? '').trim();
+                  return /^\\d{1,4}[mh]$/.test(t);
+                });
+              const before = tfButton();
+              const tfClicked = !!before;
+              let tfOptFound = false;
+              let tfOptClicked = false;
+              let tfLabelAfter = before?.textContent?.trim() ?? null;
+              if (before) {
+                before.click();
+                await sleep(800);
+                const opt = [
+                  ...document.querySelectorAll(
+                    'button, [role="button"], [role="option"], [role="menuitem"], li'
+                  )
+                ].find((el) => {
+                  const t = (el.textContent ?? '').trim();
+                  return t === '15m' || t === '15';
+                });
+                tfOptFound = !!opt;
+                if (opt) {
+                  const tgt = opt.tagName === 'BUTTON' ? opt : (opt.querySelector('button') ?? opt);
+                  tgt.click();
+                  tfOptClicked = true;
+                  await sleep(1800);
                 }
-              } catch {
-                painted = { ok: 'sampling-error' };
+                tfLabelAfter = tfButton()?.textContent?.trim() ?? null;
               }
+              await sleep(300);
               return {
                 ok: true,
                 canvases,
-                painted,
-                hasPlayback: document.body.textContent.includes('Playback'),
+                paintedBefore,
+                tfClicked,
+                tfOptFound,
+                tfOptClicked,
+                tfLabelAfter,
+                canvasesAfterTf: document.querySelectorAll('canvas').length,
+                paintedAfterTf: samplePainted(),
+                tfCandidates: [...document.querySelectorAll('button')]
+                  .map((b) => (b.textContent ?? '').trim())
+                  .filter((t) => t.length > 0 && t.length <= 8)
+                  .slice(0, 60),
+                hasPlayback: true,
                 hasSessionChip: document.body.textContent.includes('EUR/USD'),
                 sourceBadge: document.body.textContent.includes('cache'),
                 candleCounter: document.body.textContent.includes('candles')
@@ -164,8 +217,11 @@ function createWindow(): void {
         )
         console.log('[e2e] summary    =', JSON.stringify(summary1))
         console.log('[e2e] download#2 =', JSON.stringify(download2))
+        console.log('[e2e] batch      =', JSON.stringify(batch))
+        console.log('[e2e] summary2   =', JSON.stringify(summary2))
         console.log('[e2e] ui journey =', JSON.stringify(ui))
         console.log('[e2e] console   =', JSON.stringify(consoleLogs.slice(-8)))
+        console.log('[e2e] console-ui =', JSON.stringify(consoleLogs.slice(logsBefore).slice(0, 6)))
         console.log('[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session}.png')
       } catch (err) {
         console.error('[e2e] FAILED', err)

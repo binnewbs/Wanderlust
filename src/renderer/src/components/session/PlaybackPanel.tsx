@@ -1,6 +1,6 @@
 import { ChevronLeft, ChevronRight, Gauge, Pause, Play, SkipBack, SkipForward } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { useSessionStore } from '@/store/session'
+import { sessionBaseCandles, useSessionStore } from '@/store/session'
 
 /**
  * Playback control panel (Phase 3 renders the shell).
@@ -18,6 +18,8 @@ export default function PlaybackPanel(): React.JSX.Element {
   const currentIndex = useSessionStore((s) => s.currentIndex)
   const playing = useSessionStore((s) => s.playing)
   const speed = useSessionStore((s) => s.speed)
+  const session = useSessionStore((s) => s.session)
+  const totalCandles = sessionBaseCandles(session).length
 
   const ctlCls =
     'inline-flex items-center justify-center rounded-md border border-zinc-700 bg-zinc-900 p-2 text-zinc-500 disabled:cursor-not-allowed disabled:opacity-40'
@@ -86,7 +88,7 @@ export default function PlaybackPanel(): React.JSX.Element {
       </div>
 
       <div className="font-mono text-xs text-zinc-500">
-        <span data-testid="playback-index">{currentIndex}</span>/<span>—</span> candles
+        <span data-testid="playback-index">{currentIndex}</span>/{totalCandles} candles
       </div>
     </div>
   )

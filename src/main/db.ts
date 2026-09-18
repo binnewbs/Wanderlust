@@ -1,7 +1,7 @@
 import { join } from 'path'
 import { app } from 'electron'
 import Database from 'better-sqlite3'
-import type { Candle, CacheEntry, DownloadRequest } from '../shared/ipc'
+import type { Candle, CacheEntry, SingleTimeframeRequest } from '../shared/ipc'
 
 /**
  * SQLite cache for downloaded candles.
@@ -100,13 +100,13 @@ export function countCandlesRange(
 }
 
 /** Reads candles for a request's date range from the cache, ordered by time. */
-export function queryCandles(request: DownloadRequest): Candle[] {
+export function queryCandles(request: SingleTimeframeRequest): Candle[] {
   const [from, to] = dateRangeToMs(request.startDate, request.endDate)
   return queryCandlesRange(request.symbol, request.timeframe, from, to)
 }
 
 /** Number of cached candles for a request's date range (for cache-hit checks). */
-export function countCandles(request: DownloadRequest): number {
+export function countCandles(request: SingleTimeframeRequest): number {
   const [from, to] = dateRangeToMs(request.startDate, request.endDate)
   return countCandlesRange(request.symbol, request.timeframe, from, to)
 }

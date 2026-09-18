@@ -10,9 +10,10 @@ import PlaybackPanel from '@/components/session/PlaybackPanel'
  * Wanderlust — the backtesting session screen (Phase 3).
  *
  * Before a session exists, the main area shows an empty state; the New Session
- * modal collects asset / timeframe / range / balance and drives the cache-first
- * download with live progress. Once the data is ready, the Vela workspace is
- * mounted (per-session, keyed by the session's market) with the offline bars,
+ * modal collects asset / initial timeframe / range / balance and drives the
+ * cache-first download of EVERY timeframe with live progress. Once the data is
+ * ready, the Vela workspace is mounted (per-session, keyed by the session's
+ * market) with the `wanderlust` data provider serving the session's candles,
  * and the playback control panel docks below the chart. Phase 4 wires the
  * playback controls; Phase 5 adds trade execution on top of Vela's drawings.
  */
@@ -43,6 +44,9 @@ export default function App(): React.JSX.Element {
     ? `${session.asset.id}-${session.timeframe}-${session.startDate}-${session.endDate}`
     : 'none'
 
+  // Header badge shows where the INITIAL timeframe's data came from.
+  const sessionSource = session ? (session.sources[session.timeframe] ?? 'cache') : 'cache'
+
   return (
     <div className="flex h-full flex-col bg-zinc-950 text-zinc-100">
       {/* Header */}
@@ -61,9 +65,9 @@ export default function App(): React.JSX.Element {
                 {session.startDate} → {session.endDate}
               </span>
               <span
-                className={`rounded-full border px-1.5 py-px text-[9px] font-medium uppercase ${sourceStyles[session.source] ?? ''}`}
+                className={`rounded-full border px-1.5 py-px text-[9px] font-medium uppercase ${sourceStyles[sessionSource] ?? ''}`}
               >
-                {session.source}
+                {sessionSource}
               </span>
             </span>
           )}
@@ -113,13 +117,8 @@ export default function App(): React.JSX.Element {
               <span className="font-mono">${session.balance.toLocaleString('en-US')}</span>
             </div>
             <div className="relative flex-1">
-              {/* Keyed per session: each session gets a fresh workspace seeded with its bars. */}
-              <VelaChart
-                key={sessionKey}
-                symbol={session.asset.id}
-                timeframe={session.timeframe}
-                candles={session.candles}
-              />
+              {/* Keyed per session: each session gets a fresh workspace + provider. */}
+              <VelaChart key={sessionKey} symbol={session.asset.id} timeframe={session.timeframe} />
             </div>
             <PlaybackPanel />
           </div>

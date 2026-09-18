@@ -2,7 +2,7 @@
 
 Wanderlust is an open-source, desktop-based backtesting application for trading. It allows traders to test their trading strategies on historical market data and analyze their performance. It is modeled after FX Replay but runs fully offline: market data is downloaded on-demand from Dukascopy and cached locally, so there are no server costs and no subscription paywalls.
 
-> **Status: Phase 3 complete** — session UI: asset selector, cache-first download with live progress, Vela chart workspace, playback panel shell. See [Work in progress](#work-in-progress).
+> **Status: Phase 3 complete** — session UI: asset selector, cache-first download of all timeframes with live progress, Vela chart workspace with a session data provider (timeframe switching works), playback panel shell. See [Work in progress](#work-in-progress).
 
 ## Tech Stack
 
@@ -38,10 +38,11 @@ Other scripts:
 src/
 ├── shared/
 │   ├── ipc.ts            # IPC channel names + payload types (the contract)
+│   ├── timeframes.ts     # Canonical timeframe list (m1…d1) + labels
 │   └── assets.ts         # Curated Dukascopy instrument list (generated from its metadata)
 ├── main/
 │   ├── index.ts          # App entry: window creation, lifecycle, E2E hook
-│   ├── ipc.ts            # ipcMain.handle() registration (download / cache query / summary)
+│   ├── ipc.ts            # ipcMain.handle() registration (download single/batch, cache query, summary)
 │   ├── db.ts             # SQLite cache (schema, query, upsert, summary)
 │   ├── dukascopy.ts      # Dukascopy fetcher: per-day loop, cache skip, progress
 │   └── smoke.ts          # Dev-only SQLite smoke test
@@ -52,11 +53,13 @@ src/
     └── src/
         ├── App.tsx       # Session screen: header, empty state, chart + playback layout
         ├── store/
-        │   └── session.ts# Zustand: session lifecycle (idle→downloading→ready/error), progress, candles
+        │   └── session.ts# Zustand: session lifecycle (idle→downloading→ready/error),
+        │                 # progress, candlesByTimeframe, playback fields
         ├── components/
         │   ├── ui/           # shadcn/ui components
         │   ├── chart/
-        │   │   ├── VelaChart.tsx  # Vela workspace wrapper (per-session mount, offline bars)
+        │   │   ├── VelaChart.tsx  # Vela workspace wrapper (per-session mount, provider-driven)
+        │   │   ├── sessionProvider.ts # 'wanderlust' Vela DataProvider serving session bars
         │   │   └── vela.ts        # timeframe + candle adapters (kept out of the component)
         │   └── session/
         │       ├── NewSessionModal.tsx  # asset/timeframe/range/balance + progress panel
@@ -75,10 +78,9 @@ Exposed to the renderer as `window.api` via the preload bridge:
 | `data:cache-summary` | renderer → main | List cached (symbol, timeframe) ranges (`window.api.getCacheSummary`) |
 | `data:download-progress` | main → renderer | Progress events streamed while downloading (`window.api.onDownloadProgress`) |
 
-`window.api.downloadData({ symbol, timeframe, startDate, endDate })` returns
-`{ ok, candles, source, ... }` where `source` is `'cache'` (entire range already
-stored), `'dukascopy'` (all fetched this call), or `'mixed'` (cached days reused
-and missing days fetched).
+`window.api.downloadData(request)` returns either:
+- a `DownloadResult` (`{ ok, candles, source, ... }`, `source` is `'cache'` for a fully cached range, `'dukascopy'` when all fetched this call, or `'mixed'` when cached days were reused) when `request` names a single `timeframe`; or
+- a `DownloadBatchResult` (`{ ok, timeframes: [{ timeframe, candles, source }], totalCandles }`) when `request.timeframes` lists several (the session always download all of m1…d1 in one batch; progress is scaled across the batch).
 
 The SQLite cache lives at `app.getPath('userData')/wanderlust-cache.db` with a
 `cached_candles` table keyed on `(symbol, timeframe, timestamp)`.
@@ -97,9 +99,12 @@ WANDERLUST_SMOKE=1 ./node_modules/electron/dist/electron .
 #   2. downloadData  → 'dukascopy' (fresh) or 'mixed'/'cache' (partially cached)
 #   3. getCachedData / getCacheSummary → persistence readback
 #   4. downloadData  → 'cache' (instant cache hit)
-#   5. UI journey    → open the New Session modal, set a cached range, click
+#   5. batch download → downloadData with timeframes: ['m15','h1','d1'] returns
+#      a DownloadBatchResult (session behavior: many timeframes in one call)
+#   6. UI journey    → open the New Session modal, set a cached range, click
 #      Start Session, wait for the Vela workspace to mount and PAINT (canvas
-#      pixel sampling), assert the playback panel + session chip
+#      pixel sampling), switch the chart to 15m via the topbar, assert it
+#      repaints with the new dataset + playback panel + session chip
 # Writes screenshots to /tmp/opencode/wanderlust-{1-empty,2-session}.png
 WANDERLUST_E2E=1 ./node_modules/electron/dist/electron .
 ```
@@ -117,7 +122,7 @@ WANDERLUST_E2E=1 ./node_modules/electron/dist/electron .
 
 - **Phase 1 (done):** electron-vite scaffold, dependencies (Zustand, Vela, lucide-react, shadcn/ui, better-sqlite3, dukascopy-node), IPC handlers + preload bridge, SQLite cache schema.
 - **Phase 2 (done):** on-demand Dukascopy fetching (`getHistoricalRates` in `src/main/dukascopy.ts`) — day-by-day loop with per-day cache skip, progress events, gap-fill merging (`source: cache | dukascopy | mixed`), and unknown-symbol/timeframe validation.
-- **Phase 3 (done):** session UI — New Session modal (asset selector backed by `src/shared/assets.ts`, timeframe, date range, starting balance), live download progress panel, and the `@luxalgo/vela/workspace` chart mounted per session with the downloaded candles as offline bars (`MarketConfig.data`, no provider). The playback control panel (Play/Pause, step, go-to, speed) is rendered but its controls stay disabled until Phase 4 wires the playback loop.
+- **Phase 3 (done):** session UI — New Session modal (asset selector backed by `src/shared/assets.ts`, initial chart timeframe, date range, starting balance), live download progress panel, and the `@luxalgo/vela/workspace` chart mounted per session. A session downloads **every timeframe (m1…d1) in one batch** (`data:download` with `timeframes`, progress scaled across the batch) into the SQLite cache, and the chart is driven by a `wanderlust` data provider (`createSessionDataProvider`) that serves each timeframe's candles from the session store — so the workspace's timeframe bar switches datasets live instead of going blank. The playback control panel (Play/Pause, step, go-to, speed) is rendered but its controls stay disabled until Phase 4 wires the playback loop.
 - **Phase 4 (next):** playback loop.
 - **Phase 5:** trade execution & position management.
 - **Phase 6:** analytics & journaling.

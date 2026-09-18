@@ -1,5 +1,5 @@
 import { getDb, insertCandles, queryCandles, getCacheSummary, closeDb } from './db'
-import type { Candle, DownloadRequest } from '../shared/ipc'
+import type { Candle, SingleTimeframeRequest } from '../shared/ipc'
 
 /**
  * Dev-only self test, invoked from the main process when
@@ -18,7 +18,12 @@ export async function runDbSmokeTest(): Promise<string> {
 
   const inserted = insertCandles(symbol, timeframe, candles)
 
-  const req: DownloadRequest = { symbol, timeframe, startDate: '2024-01-02', endDate: '2024-01-02' }
+  const req: SingleTimeframeRequest = {
+    symbol,
+    timeframe,
+    startDate: '2024-01-02',
+    endDate: '2024-01-02'
+  }
   const queried = queryCandles(req)
   const summary = getCacheSummary().find((e) => e.symbol === symbol)
 

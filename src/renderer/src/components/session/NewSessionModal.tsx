@@ -3,24 +3,16 @@ import { AlertTriangle, Download, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ASSETS, ASSET_BY_ID } from '@shared/assets'
 import type { Asset } from '@shared/assets'
+import { TIMEFRAMES, TIMEFRAME_LABELS, type Timeframe } from '@shared/timeframes'
 import { useSessionStore } from '@/store/session'
 
 /**
- * New Session modal (Phase 3): pick an asset, timeframe, date range and
- * starting balance, then kick off the cache-first download. While the main
- * process downloads, the modal becomes a progress panel driven by the IPC
+ * New Session modal (Phase 3): pick an asset, the chart's initial timeframe,
+ * a date range and starting balance, then kick off the cache-first download.
+ * The session downloads EVERY timeframe for the range in one batch; while the
+ * main process works, the modal becomes a progress panel driven by the IPC
  * progress events streamed into the session store.
  */
-
-const TIMEFRAME_OPTIONS: Array<{ id: string; label: string }> = [
-  { id: 'm1', label: '1 minute' },
-  { id: 'm5', label: '5 minutes' },
-  { id: 'm15', label: '15 minutes' },
-  { id: 'm30', label: '30 minutes' },
-  { id: 'h1', label: '1 hour' },
-  { id: 'h4', label: '4 hours' },
-  { id: 'd1', label: '1 day' }
-]
 
 const CATEGORIES = Array.from(new Set(ASSETS.map((a) => a.category)))
 
@@ -48,7 +40,7 @@ export default function NewSessionModal({
   const dismissError = useSessionStore((s) => s.dismissError)
 
   const [assetId, setAssetId] = useState('eurusd')
-  const [timeframe, setTimeframe] = useState('m1')
+  const [timeframe, setTimeframe] = useState<Timeframe>('m1')
   const [startDate, setStartDate] = useState('2024-01-02')
   const [endDate, setEndDate] = useState('2024-01-31')
   const [balanceStr, setBalanceStr] = useState('100000')
@@ -171,18 +163,21 @@ export default function NewSessionModal({
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className={labelCls()}>Timeframe</label>
+                <label className={labelCls()}>Chart timeframe</label>
                 <select
                   className={fieldCls()}
                   value={timeframe}
-                  onChange={(e) => setTimeframe(e.target.value)}
+                  onChange={(e) => setTimeframe(e.target.value as Timeframe)}
                 >
-                  {TIMEFRAME_OPTIONS.map((tf) => (
-                    <option key={tf.id} value={tf.id}>
-                      {tf.label}
+                  {TIMEFRAMES.map((tf) => (
+                    <option key={tf} value={tf}>
+                      {TIMEFRAME_LABELS[tf]}
                     </option>
                   ))}
                 </select>
+                <p className="mt-1 text-[11px] text-zinc-500">
+                  Initial view — every timeframe is downloaded, switch on the chart anytime.
+                </p>
               </div>
               <div>
                 <label className={labelCls()}>Starting balance ($)</label>

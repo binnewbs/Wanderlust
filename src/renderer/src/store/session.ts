@@ -1,23 +1,25 @@
 import { create } from 'zustand'
 import type { Asset } from '@shared/assets'
-import type { Candle, DownloadProgressEvent } from '@shared/ipc'
+import type { Candle, DownloadBatchResult, DownloadProgressEvent } from '@shared/ipc'
+import { TIMEFRAMES, type Timeframe } from '@shared/timeframes'
 
 /**
  * The backtest session's state machine.
  *
- * Phase 3 responsibilities: capture a session request (asset, timeframe, date
- * range, starting balance), drive the cache-first download while streaming
- * progress events into the UI, and hold the resulting candle array for the
- * chart. Fields marked "Phase 4" are seeded now so the store shape stays
- * stable when the playback loop lands.
+ * A session downloads EVERY timeframe (m1…d1) for the chosen range in ONE batch
+ * IPC call, streams progress into the UI, and stores the candles per timeframe
+ * (`candlesByTimeframe`) — the per-timeframe `masterCandleArray`s the playback
+ * loop slices in Phase 4. Fields marked "Phase 4" are seeded now so the store
+ * shape stays stable when the playback loop lands.
  */
 
 export type SessionStatus = 'idle' | 'downloading' | 'ready' | 'error'
 
 export interface NewSessionInput {
   asset: Asset
-  /** Dukascopy timeframe id ('m1' | 'm5' | 'm15' | 'm30' | 'h1' | 'h4' | 'd1') */
-  timeframe: string
+  /** Dukascopy timeframe id ('m1' | 'm5' | 'm15' | 'm30' | 'h1' | 'h4' | 'd1')
+   *  — the chart's INITIAL timeframe; every timeframe is downloaded regardless. */
+  timeframe: Timeframe
   /** ISO date, inclusive start (e.g. '2024-01-02') */
   startDate: string
   /** ISO date, inclusive end (e.g. '2024-01-31') */
@@ -27,11 +29,10 @@ export interface NewSessionInput {
 }
 
 export interface ActiveSession extends NewSessionInput {
-  /** Candles for the whole session range, time-ordered. This is the
-   *  `masterCandleArray` the playback loop slices in Phase 4. */
-  candles: Candle[]
-  /** 'cache' | 'dukascopy' | 'mixed' — where this session's data came from */
-  source: string
+  /** Candles for every downloaded timeframe, keyed by dukascopy timeframe id. */
+  candlesByTimeframe: Partial<Record<Timeframe, Candle[]>>
+  /** Where each timeframe's data came from ('cache' | 'dukascopy' | 'mixed') */
+  sources: Partial<Record<Timeframe, string>>
 }
 
 export interface SessionState {
@@ -49,6 +50,12 @@ export interface SessionState {
   dismissError: () => void
 }
 
+/** Candles of the session's initial timeframe — the playback panel's counter. */
+export function sessionBaseCandles(session: ActiveSession | null): Candle[] {
+  if (!session) return []
+  return session.candlesByTimeframe[session.timeframe] ?? []
+}
+
 export const useSessionStore = create<SessionState>((set) => ({
   status: 'idle',
   session: null,
@@ -61,29 +68,40 @@ export const useSessionStore = create<SessionState>((set) => ({
   dismissError: () => set({ error: null, status: 'idle' }),
 
   startSession: async (input) => {
+    // One batch call downloads every timeframe for the range (cache-first;
+    // progress is scaled across timeframes by the main process).
     const request = {
       symbol: input.asset.id,
       timeframe: input.timeframe,
+      timeframes: [...TIMEFRAMES],
       startDate: input.startDate,
       endDate: input.endDate
     }
     set({ status: 'downloading', progress: [], error: null, session: null, currentIndex: 0 })
     try {
-      // Cache-first: the main process serves cached days instantly and fetches
-      // the rest, streaming progress into `progress` above.
-      const res = await window.api.downloadData(request)
+      const raw = await window.api.downloadData(request)
+      if (!('timeframes' in raw)) {
+        set({ status: 'error', error: raw.message ?? 'Download failed.' })
+        return
+      }
+      const res = raw as DownloadBatchResult
       if (!res.ok) {
         set({ status: 'error', error: res.message ?? 'Download failed.' })
         return
       }
 
-      // downloadData reports a count; read the actual candles back from cache.
-      const data = await window.api.getCachedData(request)
-      if (!data.ok) {
-        set({ status: 'error', error: data.error ?? 'Failed to read downloaded data.' })
-        return
+      // downloadData reports counts; read the actual candles back from cache.
+      const candlesByTimeframe: Partial<Record<Timeframe, Candle[]>> = {}
+      for (const tf of TIMEFRAMES) {
+        const data = await window.api.getCachedData({
+          symbol: input.asset.id,
+          timeframe: tf,
+          startDate: input.startDate,
+          endDate: input.endDate
+        })
+        if (data.ok && data.candles.length > 0) candlesByTimeframe[tf] = data.candles
       }
-      if (data.candles.length === 0) {
+      if (Object.values(candlesByTimeframe).every((c) => !c?.length)) {
         set({
           status: 'error',
           error:
@@ -92,9 +110,14 @@ export const useSessionStore = create<SessionState>((set) => ({
         return
       }
 
+      const sources: Partial<Record<Timeframe, string>> = {}
+      for (const tfRes of res.timeframes) {
+        sources[tfRes.timeframe as Timeframe] = tfRes.source
+      }
+
       set({
         status: 'ready',
-        session: { ...input, candles: data.candles, source: res.source }
+        session: { ...input, candlesByTimeframe, sources }
       })
     } catch (err) {
       set({ status: 'error', error: err instanceof Error ? err.message : String(err) })

@@ -1,6 +1,6 @@
 import { getHistoricalRates, Instrument, Timeframe } from 'dukascopy-node'
 import type { InstrumentType, JsonItem, TimeframeType } from 'dukascopy-node'
-import type { Candle, DownloadRequest } from '../shared/ipc'
+import type { Candle, SingleTimeframeRequest } from '../shared/ipc'
 import { queryCandlesRange } from './db'
 
 /**
@@ -115,7 +115,7 @@ function toCandle(item: JsonItem): Candle {
  * @throws on unsupported symbol/timeframe, or if Dukascopy is unreachable.
  */
 export async function fetchFromDukascopy(
-  request: DownloadRequest,
+  request: SingleTimeframeRequest,
   onProgress: ProgressReporter
 ): Promise<FetchResult> {
   const { symbol, timeframe } = request
