@@ -115,7 +115,10 @@ WANDERLUST_SMOKE=1 ./node_modules/electron/dist/electron .
 #   9. ui4 selection  → regression: a click on a drawing also opens Vela's
 #      floating toolbar; dismissing it (an outside press) must not drop the
 #      drawing — New Order still seeds from the tool and the order closes exact
-# Writes screenshots to /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection}.png
+#  10. ui5 viewport    → regression: stepping playback must not reset the chart
+#      view — the current zoom is preserved and the right edge advances with the
+#      newest candle (no snap to a fixed 120-bar framewindow)
+# Writes screenshots to /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport}.png
 WANDERLUST_E2E=1 ./node_modules/electron/dist/electron .
 ```
 

@@ -93,7 +93,6 @@ export default function TradingPanel(): React.JSX.Element {
   const balance = useSessionStore((s) => s.balance)
   const orders = useSessionStore((s) => s.orders)
   const selectedDrawing = useSessionStore((s) => s.selectedDrawing)
-  const lastOrderResult = useSessionStore((s) => s.lastOrderResult)
   const setSelectedDrawing = useSessionStore((s) => s.setSelectedDrawing)
   const [menuOpen, setMenuOpen] = useState(false)
 
@@ -157,15 +156,6 @@ export default function TradingPanel(): React.JSX.Element {
           </span>
         ) : (
           <span className="text-[11px] text-zinc-600">No position tool selected</span>
-        )}
-
-        {lastOrderResult && (
-          <span
-            data-testid="order-feedback"
-            className={`text-[11px] ${lastOrderResult.ok ? 'text-emerald-300' : 'text-rose-400'}`}
-          >
-            {lastOrderResult.message}
-          </span>
         )}
 
         <div className="ml-auto flex items-center gap-3 text-[11px] text-zinc-500">

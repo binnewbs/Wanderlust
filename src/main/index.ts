@@ -647,6 +647,57 @@ function createWindow(): void {
         await shot('/tmp/opencode/wanderlust-5-selection.png')
         note('ui4', ui4)
 
+        // ---- 4e. Regression for the view reset: `setMarket({ data })` is a
+        // full market switch that nulls the chart viewport, so a hard-coded
+        // frame in pushSlice re-zoomed the chart on EVERY play/step (and jumped
+        // from "frame all 24h run-up" to the 120-bar window the moment playback
+        // started). Fix: after the initial reveal the current view is preserved
+        // — pinned to the newest candle it slides along at the SAME zoom, so
+        // the width (zoom) is untouched and the right edge advances by exactly
+        // the reveal delta. ui5 steps forward and asserts both.
+        const ui5 = await js(`(async () => {
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          const q = (s) => document.querySelector(s);
+          const text = (s) => q(s)?.textContent?.trim() ?? null;
+          const click = (s) => { const el = q(s); if (!el) return false; el.click(); return true; };
+          const fail = (step, extra = {}) => ({ ok: false, step, ...extra });
+          const wl = window.__wanderlust;
+          if (!wl) return fail('no-e2e-handle');
+          const res = await window.api.getCachedData({
+            symbol: 'eurusd', timeframe: 'm1', startDate: '2026-09-01', endDate: '2026-09-02'
+          });
+          const candles = res.candles ?? [];
+          if (candles.length < 13) return fail('no-candles', { count: candles.length });
+          const barMs = 60000;
+          const stepTo = async (n) => {
+            for (let i = 0; i < n * 4 + 10; i++) {
+              if ((q('[data-testid="playback-index"]')?.textContent ?? '').trim() === String(n)) return true;
+              if (!click('[data-testid="playback-step"]')) return false;
+              await sleep(50);
+            }
+            return (q('[data-testid="playback-index"]')?.textContent ?? '').trim() === String(n);
+          };
+          if (!(await stepTo(10))) return fail('park');
+          await sleep(200); // let the last push's view settle
+          const v1 = wl.chart.getVisibleRange();
+          if (!v1) return fail('no-view-1');
+          if (!(await stepTo(12))) return fail('step');
+          await sleep(200);
+          const v2 = wl.chart.getVisibleRange();
+          if (!v2) return fail('no-view-2');
+          const w1 = v1.to - v1.from;
+          const w2 = v2.to - v2.from;
+          const zoomStable = Math.abs(w2 - w1) <= 2 * barMs;
+          const rightFollowed = Math.abs(v2.to - (v1.to + 2 * barMs)) <= barMs;
+          return {
+            ok: zoomStable && rightFollowed,
+            step: 'final',
+            w1, w2, v1to: v1.to, v2to: v2.to, zoomStable, rightFollowed
+          };
+        })()`)
+        await shot('/tmp/opencode/wanderlust-6-viewport.png')
+        note('ui5', ui5)
+
         console.log('[e2e] shell      =', JSON.stringify(shellDom))
         console.log('[e2e] download#1 =', JSON.stringify(download1))
         console.log(
@@ -661,10 +712,11 @@ function createWindow(): void {
         console.log('[e2e] ui2 grace  =', JSON.stringify(ui2))
         console.log('[e2e] ui3 orders =', JSON.stringify(ui3))
         console.log('[e2e] ui4 select =', JSON.stringify(ui4))
+        console.log('[e2e] ui5 viewpt =', JSON.stringify(ui5))
         console.log('[e2e] console   =', JSON.stringify(consoleLogs.slice(-8)))
         console.log('[e2e] console-ui =', JSON.stringify(consoleLogs.slice(logsBefore).slice(0, 6)))
         console.log(
-          '[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection}.png'
+          '[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport}.png'
         )
       } catch (err) {
         console.error('[e2e] FAILED', err)

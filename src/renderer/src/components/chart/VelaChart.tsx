@@ -143,8 +143,8 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
 
     // --- Playback slicing (Phase 4) ---
     // Push the session's revealed slice for the chart's CURRENT timeframe,
-    // framed by a sliding playback window around the newest revealed bar.
-    // Reads state live, so it never goes stale no matter what changed.
+    // PRESERVING the user's viewport across reveals. Reads state live, so it
+    // never goes stale no matter what changed.
     //
     // IDEMPOTENCY GUARD: `chart.setMarket({ data })` itself fires
     // `market:changed` ("offline data changed"), and the topbar's timeframe
@@ -154,6 +154,9 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
     // makes every re-entrant push a no-op, so the loop always converges after
     // one redundant setMarket at most.
     let lastPushKey = ''
+    // Time of the newest revealed bar on the LAST push — lets the next push
+    // know how far the tape advanced and whether the view is pinned to it.
+    let lastPushLastTime: number | null = null
     const pushSlice = (): void => {
       const st = useSessionStore.getState()
       const session = st.session
@@ -166,15 +169,34 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
       const last = slice[slice.length - 1]?.time
       const first = slice[0]?.time
       const barMs = timeframeMs(activeTf)
-      // At index 0 the reveal is the run-up context — frame ALL of it so the
-      // full 24h of pre-session candles are visible on load (not just the last
-      // 120 bars). Once playback starts the usual 120-bar window slides in.
-      const visibleRange: VisibleRange | undefined =
-        last === undefined
-          ? undefined
-          : st.currentIndex === 0
-            ? { from: first, to: last + barMs }
-            : { from: last - barMs * WINDOW_BARS, to: last + barMs }
+      // `setMarket({ data })` treats ANY new data array as a full market switch
+      // and nulls the viewport — so passing a hard-coded frame here would reset
+      // the chart on every play/step (the 24h→120-bar jump when playback
+      // starts, and the user's zoom/pan being discarded each tick). Re-assert
+      // the least surprising range for the new data ourselves:
+      //   - index 0 (initial reveal): frame ALL of the run-up context, so the
+      //     full 24h of pre-session candles are visible on load.
+      //   - otherwise: read the CURRENT view and keep it. Pinned to the newest
+      //     revealed bar → slide it along by the reveal delta at the SAME zoom
+      //     (the tape plays in place: newest candle stays at the right edge,
+      //     width untouched). Panned/zoomed away → leave the user's range
+      //     exactly as set — nothing behind moves, fresh bars belong off-view.
+      let visibleRange: VisibleRange | undefined
+      if (last === undefined) {
+        visibleRange = undefined
+      } else if (st.currentIndex === 0 || lastPushLastTime === null) {
+        visibleRange = { from: first, to: last + barMs }
+      } else {
+        const cur = chart.getVisibleRange()
+        const prevLast = lastPushLastTime
+        if (cur && cur.to >= prevLast - barMs) {
+          const delta = last - prevLast
+          visibleRange = { from: cur.from + delta, to: cur.to + delta }
+        } else {
+          visibleRange = cur ?? { from: last - barMs * WINDOW_BARS, to: last + barMs }
+        }
+      }
+      lastPushLastTime = last ?? lastPushLastTime
       void chart.setMarket({
         symbol: sessionTicker(session.asset.id),
         timeframe: activeTf,
