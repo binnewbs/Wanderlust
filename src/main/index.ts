@@ -38,13 +38,22 @@ function createWindow(): void {
     void (async () => {
       if (process.env['WANDERLUST_E2E'] !== '1') return
       try {
-        const summary = await mainWindow.webContents.executeJavaScript(
-          'window.api.getCacheSummary()'
+        const js = <T>(code: string): Promise<T> =>
+          mainWindow.webContents.executeJavaScript(code) as Promise<T>
+        const range = {
+          symbol: 'eurusd',
+          timeframe: 'm1',
+          startDate: '2024-01-02',
+          endDate: '2024-01-04'
+        }
+        const download1 = await js(`window.api.downloadData(${JSON.stringify(range)})`)
+        await js('new Promise(r => setTimeout(r, 250))') // let progress events flush
+        const readback = await js<{ ok: boolean; count: number }>(
+          `window.api.getCachedData(${JSON.stringify(range)})`
         )
-        const download = await mainWindow.webContents.executeJavaScript(
-          "window.api.downloadData({ symbol: 'eurusd', timeframe: 'm1', startDate: '2024-01-02', endDate: '2024-01-03' })"
-        )
-        const dom = await mainWindow.webContents.executeJavaScript(`({
+        const summary1 = await js('window.api.getCacheSummary()')
+        const download2 = await js(`window.api.downloadData(${JSON.stringify(range)})`)
+        const dom = await js(`({
           title: document.querySelector('h1')?.textContent ?? null,
           buttons: [...document.querySelectorAll('button')].map((b) => b.textContent?.trim()),
           hasProgressPanel: document.body.textContent.includes('Download progress events'),
@@ -54,9 +63,14 @@ function createWindow(): void {
         const image = await mainWindow.webContents.capturePage()
         const { writeFileSync } = await import('fs')
         writeFileSync('/tmp/opencode/wanderlust-ui.png', image.toPNG())
-        console.log('[e2e] cacheSummary =', JSON.stringify(summary))
-        console.log('[e2e] downloadData  =', JSON.stringify(download))
-        console.log('[e2e] dom           =', JSON.stringify(dom))
+        console.log('[e2e] download#1  =', JSON.stringify(download1))
+        console.log(
+          '[e2e] readback    =',
+          JSON.stringify({ ok: readback.ok, count: readback.count })
+        )
+        console.log('[e2e] summary     =', JSON.stringify(summary1))
+        console.log('[e2e] download#2  =', JSON.stringify(download2))
+        console.log('[e2e] dom         =', JSON.stringify(dom))
         console.log('[e2e] screenshot written to /tmp/opencode/wanderlust-ui.png')
       } catch (err) {
         console.error('[e2e] FAILED', err)

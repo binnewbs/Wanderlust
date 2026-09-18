@@ -55,7 +55,8 @@ export interface DownloadResult {
   timeframe: string
   /** Number of candles delivered by this call */
   candles: number
-  source: 'cache' | 'dukascopy' | 'none'
+  /** Where the candles came from this time */
+  source: 'cache' | 'dukascopy' | 'mixed' | 'none'
   message?: string
 }
 

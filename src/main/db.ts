@@ -64,9 +64,13 @@ export function dateRangeToMs(startDate: string, endDate: string): [number, numb
   return [start, end]
 }
 
-/** Reads candles for a request from the cache, ordered by time. */
-export function queryCandles(request: DownloadRequest): Candle[] {
-  const [from, to] = dateRangeToMs(request.startDate, request.endDate)
+/** Reads candles between two UTC milliseconds (inclusive), ordered by time. */
+export function queryCandlesRange(
+  symbol: string,
+  timeframe: string,
+  fromMs: number,
+  toMs: number
+): Candle[] {
   const rows = getDb()
     .prepare(
       `SELECT timestamp, open, high, low, close, volume
@@ -74,21 +78,37 @@ export function queryCandles(request: DownloadRequest): Candle[] {
         WHERE symbol = ? AND timeframe = ? AND timestamp BETWEEN ? AND ?
         ORDER BY timestamp ASC`
     )
-    .all(request.symbol.toLowerCase(), request.timeframe, from, to) as Candle[]
+    .all(symbol.toLowerCase(), timeframe, fromMs, toMs) as Candle[]
   return rows
 }
 
-/** Number of cached candles for a request's range (for cache-hit checks). */
-export function countCandles(request: DownloadRequest): number {
-  const [from, to] = dateRangeToMs(request.startDate, request.endDate)
+/** Number of cached candles between two UTC milliseconds (inclusive). */
+export function countCandlesRange(
+  symbol: string,
+  timeframe: string,
+  fromMs: number,
+  toMs: number
+): number {
   const row = getDb()
     .prepare(
       `SELECT COUNT(*) AS n
          FROM cached_candles
         WHERE symbol = ? AND timeframe = ? AND timestamp BETWEEN ? AND ?`
     )
-    .get(request.symbol.toLowerCase(), request.timeframe, from, to) as { n: number }
+    .get(symbol.toLowerCase(), timeframe, fromMs, toMs) as { n: number }
   return row.n
+}
+
+/** Reads candles for a request's date range from the cache, ordered by time. */
+export function queryCandles(request: DownloadRequest): Candle[] {
+  const [from, to] = dateRangeToMs(request.startDate, request.endDate)
+  return queryCandlesRange(request.symbol, request.timeframe, from, to)
+}
+
+/** Number of cached candles for a request's date range (for cache-hit checks). */
+export function countCandles(request: DownloadRequest): number {
+  const [from, to] = dateRangeToMs(request.startDate, request.endDate)
+  return countCandlesRange(request.symbol, request.timeframe, from, to)
 }
 
 /**

@@ -130,7 +130,7 @@ export default function App(): React.JSX.Element {
           <Activity className="size-5 text-sky-400" />
           <h1 className="text-base font-semibold tracking-tight">Wanderlust</h1>
           <span className="rounded-full border border-zinc-700 px-2 py-0.5 text-[10px] font-medium text-zinc-400">
-            Phase 1 · IPC smoke test
+            Phase 2 · Dukascopy download test
           </span>
         </div>
         <Button
@@ -271,8 +271,7 @@ export default function App(): React.JSX.Element {
             <p className="text-xs text-rose-300">{summaryError}</p>
           ) : cacheEntries.length === 0 ? (
             <p className="text-xs text-zinc-600">
-              Cache is empty — downloaded candles will appear here once the Phase 2 downloader
-              lands.
+              Cache is empty — trigger a download to populate it.
             </p>
           ) : (
             <table className="w-full text-left text-xs">

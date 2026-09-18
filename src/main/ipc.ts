@@ -46,7 +46,7 @@ function sendProgress(event: Electron.IpcMainInvokeEvent, payload: DownloadProgr
 /**
  * Registers all IPC handlers for the app.
  *
- * - `data:download`          cache-first download of a date range (Dukascopy fetch in Phase 2)
+ * - `data:download`          cache-first download of a date range (Dukascopy fetch)
  * - `data:get-cached`        query candles already in the local cache
  * - `data:cache-summary`     what (symbol, timeframe) ranges are stored
  *
@@ -96,53 +96,44 @@ export function registerIpcHandlers(): void {
         }
       }
 
-      // 1. Cache-first: if this exact range is already stored, return it instantly.
+      // 1. Cache-first: fetchFromDukascopy serves already-cached days from
+      //    SQLite without touching the network and fills any gaps, so the
+      //    cache-hit path is still instant for fully-cached ranges.
       sendProgress(event, {
         phase: 'checking-cache',
         message: `Checking local cache for ${req.symbol} ${req.timeframe} [${req.startDate} → ${req.endDate}]…`
       })
-      const cached = queryCandles(req)
-      if (cached.length > 0) {
-        sendProgress(event, {
-          phase: 'ready',
-          message: `${cached.length} candles loaded from cache.`,
-          percent: 100
-        })
-        return {
-          ok: true,
-          symbol: req.symbol,
-          timeframe: req.timeframe,
-          candles: cached.length,
-          source: 'cache'
-        }
-      }
-
-      // 2. Nothing cached for that range — fetch from Dukascopy (Phase 2).
-      sendProgress(event, {
-        phase: 'downloading',
-        message: `Requesting ${req.symbol} from Dukascopy…`,
-        percent: 0
-      })
       try {
-        const data = await fetchFromDukascopy(req, (message, percent) =>
+        const result = await fetchFromDukascopy(req, (message, percent) =>
           sendProgress(event, { phase: 'downloading', message, percent })
         )
-        sendProgress(event, {
-          phase: 'saving',
-          message: `Saving ${data.length} candles to local cache…`
-        })
-        insertCandles(req.symbol, req.timeframe, data)
-        sendProgress(event, {
-          phase: 'ready',
-          message: `${data.length} candles downloaded and cached.`,
-          percent: 100
-        })
+        const { candles, fetchedDays, cachedDays } = result
+
+        // 2. Persist the merged range (upsert — idempotent for cached rows).
+        if (fetchedDays > 0) {
+          sendProgress(event, {
+            phase: 'saving',
+            message: `Saving ${candles.length} candles to local cache…`
+          })
+          insertCandles(req.symbol, req.timeframe, candles)
+        }
+
+        // 3. Report what actually happened.
+        const source: DownloadResult['source'] =
+          fetchedDays === 0 ? 'cache' : cachedDays === 0 ? 'dukascopy' : 'mixed'
+        const message =
+          source === 'cache'
+            ? `${candles.length} candles loaded from cache.`
+            : source === 'dukascopy'
+              ? `${candles.length} candles downloaded from Dukascopy and cached.`
+              : `${candles.length} candles merged (${cachedDays} cached day(s) + ${fetchedDays} freshly downloaded) and cached.`
+        sendProgress(event, { phase: 'ready', message, percent: 100 })
         return {
           ok: true,
           symbol: req.symbol,
           timeframe: req.timeframe,
-          candles: data.length,
-          source: 'dukascopy'
+          candles: candles.length,
+          source
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
