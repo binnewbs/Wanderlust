@@ -122,7 +122,12 @@ WANDERLUST_SMOKE=1 ./node_modules/electron/dist/electron .
 #      the zoomed width (fast pushes overlap setMarket's clearing window, where
 #      the viewport is unreadable — the fix slides the last applied range
 #      instead of framing a fixed 120-bar window on the newest candle)
-# Writes screenshots to /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport,7-playback-view}.png
+#  12. ui7 freeview     → regression: the chart must not be stuck flush to the
+#      right edge and the manual price frame ("free view" from dragging the
+#      vertical price scale) must survive playback — the fix reads the UNCLAMPED
+#      viewport (right offset included) per push and re-freezes manual price
+#      scales after each reload
+# Writes screenshots to /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport,7-playback-view,8-freeview}.png
 WANDERLUST_E2E=1 ./node_modules/electron/dist/electron .
 ```
 

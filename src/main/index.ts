@@ -791,6 +791,62 @@ function createWindow(): void {
         await shot('/tmp/opencode/wanderlust-7-playback-view.png')
         note('ui6', ui6)
 
+        // ---- 4g. Regression for "charts always maxed to the right" + "the free
+        // view from resizing the vertical price scroll bar gets reset": the
+        // public getVisibleRange() clamps right-side whitespace away, so every
+        // push reset the right offset to 0 (newest candle glued to the screen
+        // edge), and Vela's reload path (reframeKeepZoom) reset manual price
+        // frames to autoscale. ui7 freezes a manual price frame on the main
+        // pane exactly like the price-axis drag does, plays at max-speed
+        // cadence, and asserts the price frame + the right offset survive.
+        const ui7 = await js(`(async () => {
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          const q = (s) => document.querySelector(s);
+          const text = (s) => q(s)?.textContent?.trim() ?? null;
+          const click = (s) => { const el = q(s); if (!el) return false; el.click(); return true; };
+          const fail = (step, extra = {}) => ({ ok: false, step, ...extra });
+          const wl = window.__wanderlust;
+          if (!wl) return fail('no-e2e-handle');
+          // chart.renderer is Vela's RendererControl facade — the native
+          // renderer (with scene/coords) lives one hop deeper.
+          const shell = wl.chart;
+          const renderer = [shell?.rendererControl?.renderer, shell?.renderer, shell?.orchestrator?.renderer]
+            .find((r) => r && r.scene && r.coords);
+          if (!renderer) return fail('no-renderer');
+          const stepTo = async (n) => {
+            for (let i = 0; i < n * 4 + 10; i++) {
+              if ((q('[data-testid="playback-index"]')?.textContent ?? '').trim() === String(n)) return true;
+              if (!click('[data-testid="playback-step"]')) return false;
+              await sleep(50);
+            }
+            return (q('[data-testid="playback-index"]')?.textContent ?? '').trim() === String(n);
+          };
+          if (!(await stepTo(30))) return fail('park');
+          await sleep(250);
+          const vp0 = renderer.coords.getViewport();
+          const r0 = vp0 ? vp0.rightOffset : null;
+          const pane = [...(renderer.scene?.panes?.values() ?? [])].find((p) => p.kind === 'price');
+          if (!pane) return fail('no-pane');
+          // The user's "free view": resize the vertical price scale (axis drag
+          // freezes the pane into manual mode). setManualScale is that freeze.
+          renderer.setManualScale(pane, { min: 1.05, max: 1.11 });
+          if (pane.manualScale == null) return fail('no-manual');
+          // Play at max-speed cadence.
+          for (let i = 0; i < 5; i++) { if (!click('[data-testid="playback-step"]')) return fail('step'); await sleep(55); }
+          await sleep(200);
+          const vp1 = renderer.coords.getViewport();
+          const r1 = vp1 ? vp1.rightOffset : null;
+          const manualKept = pane.manualScale != null;
+          const rangeKept = manualKept && Math.abs(pane.scale.min - 1.05) < 1e-6 && Math.abs(pane.scale.max - 1.11) < 1e-6;
+          const offsetStable = r0 != null && r1 != null && Math.abs(r1 - r0) <= 2;
+          return {
+            ok: manualKept && rangeKept && offsetStable, step: 'final',
+            r0, r1, manualKept, rangeKept, offsetStable, min: pane.scale?.min, max: pane.scale?.max
+          };
+        })()`)
+        await shot('/tmp/opencode/wanderlust-8-freeview.png')
+        note('ui7', ui7)
+
         console.log('[e2e] shell      =', JSON.stringify(shellDom))
         console.log('[e2e] download#1 =', JSON.stringify(download1))
         console.log(
@@ -807,10 +863,11 @@ function createWindow(): void {
         console.log('[e2e] ui4 select =', JSON.stringify(ui4))
         console.log('[e2e] ui5 viewpt =', JSON.stringify(ui5))
         console.log('[e2e] ui6 playv  =', JSON.stringify(ui6))
+        console.log('[e2e] ui7 freev =', JSON.stringify(ui7))
         console.log('[e2e] console   =', JSON.stringify(consoleLogs.slice(-8)))
         console.log('[e2e] console-ui =', JSON.stringify(consoleLogs.slice(logsBefore).slice(0, 6)))
         console.log(
-          '[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport,7-playback-view}.png'
+          '[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport,7-playback-view,8-freeview}.png'
         )
       } catch (err) {
         console.error('[e2e] FAILED', err)

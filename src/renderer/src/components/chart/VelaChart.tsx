@@ -12,6 +12,104 @@ import {
 import { timeframeMs, velaTimeframe, VELA_TIMEFRAMES } from './vela'
 
 /**
+ * Right-side margin (in bars) the playback view keeps past the newest revealed
+ * candle when following the tape — Vela's own default right offset. Without it
+ * the newest candle is glued flush against the right screen edge.
+ */
+const FOLLOW_RIGHT_OFFSET = 6
+
+/**
+ * Minimal structural view of the Vela renderer bits we bridge. The public
+ * `chart.getVisibleRange()` clamps to the loaded data, so it cannot see the
+ * right-side whitespace a pinned view carries (the margin, or how far the user
+ * panned) — and Vela's reload path (`reframeKeepZoom` inside `setBars`) resets
+ * every pane's manual PRICE scale. Reading the renderer's coords/panes directly
+ * lets the playback push preserve both, without touching any Vela internals.
+ */
+interface PriceRange {
+  min: number
+  max: number
+}
+interface CoordsBridge {
+  barCount: number
+  widthPx: number
+  visibleLogicalRange(): { from: number; to: number } | null
+  logicalToTime(logical: number): number
+}
+interface ScaleHolderBridge {
+  manualScale: PriceRange | null
+  scale: PriceRange
+}
+interface RendererBridge {
+  coords: CoordsBridge
+  scene: {
+    panes: Map<string, ScaleHolderBridge>
+    indicatorScales?: Map<string, ScaleHolderBridge>
+  }
+  setManualScale(holder: ScaleHolderBridge, scale: PriceRange): void
+}
+
+function hasScene(r: unknown): r is RendererBridge {
+  return (
+    typeof r === 'object' &&
+    r !== null &&
+    'scene' in r &&
+    'coords' in r &&
+    typeof (r as { setManualScale?: unknown }).setManualScale === 'function'
+  )
+}
+
+/**
+ * Resolve the NATIVE renderer from the chart shell. `chart.renderer` is a
+ * getter that returns Vela's RendererControl FACADE, not the renderer that owns
+ * `scene`/`coords` — the native instance lives one hop deeper
+ * (`rendererControl.renderer`, or `orchestrator.renderer` on some builds).
+ * Instead of guessing the exact wrapper shape, pick the first candidate that
+ * actually has `scene` + `coords` + `setManualScale`.
+ */
+function rendererOf(chart: unknown): RendererBridge | null {
+  const anyChart = chart as {
+    renderer?: unknown
+    rendererControl?: { renderer?: unknown }
+    orchestrator?: { renderer?: unknown }
+  } | null
+  if (!anyChart) return null
+  const candidates = [
+    anyChart.rendererControl?.renderer,
+    anyChart.renderer,
+    anyChart.orchestrator?.renderer
+  ]
+  for (const c of candidates) if (hasScene(c)) return c
+  return null
+}
+
+/** The panes/scales the user has manually framed (drag on the price axis). */
+function collectManualScales(chart: unknown): Map<ScaleHolderBridge, PriceRange> {
+  const renderer = rendererOf(chart)
+  const saved = new Map<ScaleHolderBridge, PriceRange>()
+  if (!renderer) return saved
+  for (const holder of renderer.scene.panes.values()) {
+    if (holder.manualScale) saved.set(holder, { min: holder.scale.min, max: holder.scale.max })
+  }
+  for (const holder of renderer.scene.indicatorScales?.values() ?? []) {
+    if (holder.manualScale) saved.set(holder, { min: holder.scale.min, max: holder.scale.max })
+  }
+  return saved
+}
+
+/** Re-freeze the freed scales after the reload — unless the user re-framed meanwhile. */
+function restoreManualScales(
+  chart: unknown,
+  saved: ReadonlyMap<ScaleHolderBridge, PriceRange>
+): void {
+  const renderer = rendererOf(chart)
+  if (!renderer || saved.size === 0) return
+  for (const [holder, range] of saved) {
+    if (holder.manualScale === null) renderer.setManualScale(holder, range)
+  }
+}
+
+/**
  * React wrapper around `@luxalgo/vela/workspace` (single-chart mode).
  *
  * The workspace is created lazily per session and addresses the chart with the
@@ -159,7 +257,12 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
     // `getVisibleRange()` returns null for a barCount of 0. Sliding the last
     // known range (instead of the renderer's live view) keeps the zoom steady
     // even when pushes overlap the load — under fast playback they do.
-    let lastRange: { from: number; to: number } | null = null
+    let lastRange: VisibleRange | null = null
+    // Manual price frames (the user's "free view" from dragging the price
+    // axis). Vela's reload path resets every pane's manual scale to autoscale,
+    // so they're captured before each push and re-frozen once the new data has
+    // painted (market:changed).
+    let pendingPriceScales: Map<ScaleHolderBridge, PriceRange> = new Map()
     const pushSlice = (): void => {
       const st = useSessionStore.getState()
       const session = st.session
@@ -177,13 +280,14 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
       // the chart on every play/step (the 24h→120-bar jump when playback
       // starts, and the user's zoom/pan being discarded each tick). Re-assert
       // the least surprising range for the new data ourselves:
-      //   - index 0 (initial reveal): frame ALL of the run-up context, so the
-      //     full 24h of pre-session candles are visible on load.
+      //   - index 0 (initial reveal): frame ALL of the run-up context, plus a
+      //     right margin, so the full 24h of pre-session candles are visible on
+      //     load without the newest glued to the screen edge.
       //   - otherwise: keep the CURRENT view. Pinned to the newest revealed
-      //     bar → slide it along by the reveal delta at the SAME zoom (the tape
-      //     plays in place: newest candle stays at the right edge, width
-      //     untouched). Panned/zoomed away → leave the range exactly as the
-      //     user set it — nothing behind moves, fresh bars belong off-view.
+      //     bar → slide it along by the reveal delta at the SAME zoom, keeping
+      //     the right offset (the tape plays in place, margin intact).
+      //     Panned/zoomed away → leave the range exactly as the user set it —
+      //     nothing behind moves, fresh bars belong off-view.
       // If the viewport is unreadable (mid-switch clear), reuse the last
       // applied range slid forward — never a hard 120-bar frame, which is what
       // snapped the playback zoomed-in on the newest candle.
@@ -191,10 +295,24 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
       if (last === undefined) {
         visibleRange = undefined
       } else if (st.currentIndex === 0 || lastPushLastTime === null) {
-        visibleRange = { from: first, to: last + barMs }
+        visibleRange = { from: first, to: last + barMs * FOLLOW_RIGHT_OFFSET }
       } else {
         const prevLast = lastPushLastTime
-        const base = chart.getVisibleRange() ?? lastRange
+        const cur = chart.getVisibleRange()
+        // Read the ACTUAL view, not the public data-clamped range. The
+        // renderer's visible logical range includes the right-side whitespace
+        // the public getVisibleRange() clamps away, so a pinned view keeps its
+        // right offset (the margin, or how far the user scrolled) instead of
+        // being flushed against the screen edge on every reveal.
+        const coords = rendererOf(chart)?.coords
+        let view: VisibleRange | null = null
+        if (coords && coords.barCount > 0 && coords.widthPx > 0) {
+          const vr = coords.visibleLogicalRange?.()
+          if (vr && Number.isFinite(vr.from) && Number.isFinite(vr.to) && vr.to >= vr.from) {
+            view = { from: coords.logicalToTime(vr.from), to: coords.logicalToTime(vr.to) }
+          }
+        }
+        const base = view ?? lastRange ?? cur
         if (base && base.to >= prevLast - barMs) {
           const delta = last - prevLast
           visibleRange = { from: base.from + delta, to: base.to + delta }
@@ -204,6 +322,13 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
       }
       lastPushLastTime = last ?? lastPushLastTime
       if (visibleRange) lastRange = { from: visibleRange.from, to: visibleRange.to }
+      // Capture the user's manual price frames BEFORE the reload nulls them
+      // (reframeKeepZoom inside setBars). While a reload is in flight the scale
+      // may read as freed already — keep the last known capture then, and only
+      // trust an empty capture when the chart is idle (an explicit user reset).
+      const captured = collectManualScales(chart)
+      const switching = (chart as unknown as { switchingMarket?: boolean }).switchingMarket === true
+      pendingPriceScales = captured.size > 0 || !switching ? captured : pendingPriceScales
       void chart.setMarket({
         symbol: sessionTicker(session.asset.id),
         timeframe: activeTf,
@@ -224,7 +349,12 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
     // Topbar timeframe switch: Vela switches in place (provider serves the new
     // timeframe's reveal) — repin the same reveal as offline data. Re-entrant
     // `market:changed` echoes (from our own setMarket) hit the guard and no-op.
-    const unsubMarket = chart.on('market:changed', () => pushSlice())
+    // Also the moment the new data has painted — restore the manual price
+    // frames the reload wiped.
+    const unsubMarket = chart.on('market:changed', () => {
+      restoreManualScales(chart, pendingPriceScales)
+      pushSlice()
+    })
     // Frame the initial reveal (index 0 → blank replay surface).
     pushSlice()
 
