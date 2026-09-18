@@ -45,29 +45,53 @@ export const PLAYBACK_WINDOW_BARS = 120
 
 // Convert each session's candle arrays to OHLCV ONCE and reuse across ticks —
 // slicing the converted array is a shallow copy, so a 30k-bar session at 20
-// ticks/s stays cheap (no per-tick object mapping / GC churn).
-const ohlcvBySession = new WeakMap<ActiveSession, Partial<Record<string, OHLCV[]>>>()
+// ticks/s stays cheap (no per-tick object mapping / GC churn). The run-up day
+// (pre-session context) is converted separately and stays its own array so
+// per-tick reveals only ever prepend its POINTERS, never re-copy its bars.
+const ohlcvBySession = new WeakMap<
+  ActiveSession,
+  { session: Partial<Record<string, OHLCV[]>>; runUp: Partial<Record<string, OHLCV[]>> }
+>()
+
+function bucketFor(session: ActiveSession): {
+  session: Partial<Record<string, OHLCV[]>>
+  runUp: Partial<Record<string, OHLCV[]>>
+} {
+  let bucket = ohlcvBySession.get(session)
+  if (!bucket) {
+    bucket = { session: {}, runUp: {} }
+    ohlcvBySession.set(session, bucket)
+  }
+  return bucket
+}
 
 function ohlcvFor(session: ActiveSession, dukaTf: string): OHLCV[] {
-  let map = ohlcvBySession.get(session)
-  if (!map) {
-    map = {}
-    ohlcvBySession.set(session, map)
+  const bucket = bucketFor(session)
+  if (!bucket.session[dukaTf]) {
+    bucket.session[dukaTf] = candlesToOhlcv(session.candlesByTimeframe[dukaTf] ?? [])
   }
-  if (!map[dukaTf]) {
-    map[dukaTf] = candlesToOhlcv(session.candlesByTimeframe[dukaTf] ?? [])
+  return bucket.session[dukaTf]
+}
+
+function runUpOhlcvFor(session: ActiveSession, dukaTf: string): OHLCV[] {
+  const bucket = bucketFor(session)
+  if (!bucket.runUp[dukaTf]) {
+    bucket.runUp[dukaTf] = candlesToOhlcv(session.runUpByTimeframe[dukaTf] ?? [])
   }
-  return map[dukaTf]
+  return bucket.runUp[dukaTf]
 }
 
 /**
- * The visible playback slice for a given chart timeframe: the candles revealed
- * up to `currentIndex`.
+ * The visible playback slice for a given chart timeframe: the day(s) of
+ * run-up context followed by the session candles revealed up to `currentIndex`
+ * (run-up is empty when it couldn't be fetched, so the slice degrades to the
+ * plain Phase-4 reveal).
  *
- * - Base timeframe: `candles.slice(0, currentIndex)` (the master array).
- * - Any other timeframe: candles whose open time is at/before the base candle
- *   currently revealed (`currentIndex - 1`), so switching timeframe mid-session
- *   still shows only what "has happened" so far.
+ * - Base timeframe: `runUp ++ candles.slice(0, currentIndex)` (the master
+ *   array plus its prelude).
+ * - Any other timeframe: `runUp ++ candles` whose open time is at/before the
+ *   base candle currently revealed (`currentIndex - 1`), so switching timeframe
+ *   mid-session still shows only what "has happened" so far.
  */
 export function playbackSlice(
   session: ActiveSession,
@@ -76,15 +100,23 @@ export function playbackSlice(
 ): OHLCV[] {
   const tf = dukascopyTimeframe(activeVelaTf)
   const bars = ohlcvFor(session, tf)
-  const base = ohlcvFor(session, session.timeframe)
-  if (tf === session.timeframe) return bars.slice(0, currentIndex)
-  const cutoff =
-    currentIndex > 0
-      ? base[Math.min(currentIndex - 1, base.length - 1)].time
-      : Number.NEGATIVE_INFINITY
-  let first = 0
-  while (first < bars.length && bars[first].time <= cutoff) first++
-  return first === bars.length ? bars : bars.slice(0, first)
+  const runUp = runUpOhlcvFor(session, tf)
+  let tail: OHLCV[]
+  if (tf === session.timeframe) {
+    tail = bars.slice(0, currentIndex)
+  } else {
+    const base = ohlcvFor(session, session.timeframe)
+    const cutoff =
+      currentIndex > 0
+        ? base[Math.min(currentIndex - 1, base.length - 1)].time
+        : Number.NEGATIVE_INFINITY
+    let first = 0
+    while (first < bars.length && bars[first].time <= cutoff) first++
+    tail = first === bars.length ? bars : bars.slice(0, first)
+  }
+  if (runUp.length === 0) return tail
+  if (tail.length === 0) return runUp
+  return runUp.concat(tail)
 }
 
 export function createSessionDataProvider(): DataProvider {

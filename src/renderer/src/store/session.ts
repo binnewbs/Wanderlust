@@ -1,7 +1,20 @@
 import { create } from 'zustand'
 import type { Asset } from '@shared/assets'
 import type { Candle, DownloadBatchResult, DownloadProgressEvent } from '@shared/ipc'
-import { TIMEFRAMES, type Timeframe } from '@shared/timeframes'
+import {
+  RUNUP_TARGET_MS,
+  TIMEFRAMES,
+  runUpTail,
+  timeframeMs,
+  type Timeframe
+} from '@shared/timeframes'
+import {
+  evaluateOrders,
+  nextOrderId,
+  type NewOrderInput,
+  type Order,
+  type PositionSelection
+} from './trading'
 
 /**
  * The backtest session's state machine.
@@ -31,6 +44,10 @@ export interface NewSessionInput {
 export interface ActiveSession extends NewSessionInput {
   /** Candles for every downloaded timeframe, keyed by dukascopy timeframe id. */
   candlesByTimeframe: Partial<Record<Timeframe, Candle[]>>
+  /** Candles of the day(s) downloaded as run-up context, keyed by dukascopy
+   *  timeframe id — what the chart shows BEFORE any session candle is revealed,
+   *  so a session never starts on a blank chart. */
+  runUpByTimeframe: Partial<Record<Timeframe, Candle[]>>
   /** Where each timeframe's data came from ('cache' | 'dukascopy' | 'mixed') */
   sources: Partial<Record<Timeframe, string>>
 }
@@ -63,6 +80,24 @@ export interface SessionState {
   goToTimestamp: (timestamp: number) => void
   setSpeed: (speed: number) => void
 
+  // --- simulated account + orders (Phase 5) ---
+  /** Live account balance — starts at the session's starting balance and moves
+   *  by realized pnl. */
+  balance: number
+  /** Default risk per order (% of balance), seeded into the New Order menu. */
+  riskPercent: number
+  /** Every order submitted this session: pending → filled → closed. */
+  orders: Order[]
+  /** The position drawing currently picked on the chart (feeds New Order). */
+  selectedDrawing: PositionSelection | null
+  /** Outcome of the last `submitOrder` call — shown under the New Order button. */
+  lastOrderResult: { ok: boolean; message: string } | null
+  /** Submit a New Order; it fills/evals from the CURRENT playback candle on. */
+  submitOrder: (input: NewOrderInput) => void
+  setRiskPercent: (pct: number) => void
+  /** The chart pushes the currently selected position drawing here (or null). */
+  setSelectedDrawing: (selection: PositionSelection | null) => void
+
   startSession: (input: NewSessionInput) => Promise<void>
   dismissError: () => void
 }
@@ -71,6 +106,47 @@ export interface SessionState {
 export function sessionBaseCandles(session: ActiveSession | null): Candle[] {
   if (!session) return []
   return session.candlesByTimeframe[session.timeframe] ?? []
+}
+
+/** Candles of the run-up day(s) for the session's initial timeframe. */
+export function sessionBaseRunUp(session: ActiveSession | null): Candle[] {
+  if (!session) return []
+  return session.runUpByTimeframe[session.timeframe] ?? []
+}
+
+/** Timestamp of the LAST revealed candle (run-up included): at index 0 the
+ *  run-up's last candle, otherwise the revealed session candle — what the
+ *  chart's right edge is pointing at right now. */
+export function revealedTime(
+  session: ActiveSession | null,
+  currentIndex: number
+): number | undefined {
+  if (!session) return undefined
+  const base = sessionBaseCandles(session)
+  if (currentIndex > 0) return base[currentIndex - 1]?.timestamp
+  const runUp = sessionBaseRunUp(session)
+  return runUp.length > 0 ? runUp[runUp.length - 1].timestamp : undefined
+}
+
+/** How many calendar days back the run-up may reach when assembling a full
+ *  24h of context (whole days back from the session start). */
+export const SESSION_RUNUP_LOOKBACK_DAYS = 7
+/** Total budget for the run-up phase when the session itself just downloaded
+ *  from Dukascopy — its network is clearly working, so a fresh 24h of context
+ *  (usually one FX day across all timeframes) can genuinely finish. */
+export const RUNUP_NETWORK_BUDGET_MS = 90_000
+/** Budget when the session was fully cache-served (typically offline or
+ *  rate-limited): only skip around in the cache / fail fast, never stall. */
+export const RUNUP_CACHEONLY_BUDGET_MS = 15_000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** ISO date shifted by whole UTC days, e.g. ('2024-01-02', -1) -> '2024-01-01'. */
+function isoAddDays(iso: string, days: number): string {
+  const [y, m, d] = iso.split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10)
 }
 
 /** First index whose candle opens at or after `ts` (binary search, ascending). */
@@ -85,7 +161,7 @@ function indexAtOrAfter(candles: Candle[], ts: number): number {
   return lo
 }
 
-export const useSessionStore = create<SessionState>((set) => ({
+export const useSessionStore = create<SessionState>((set, get) => ({
   status: 'idle',
   session: null,
   progress: [],
@@ -93,6 +169,11 @@ export const useSessionStore = create<SessionState>((set) => ({
   currentIndex: 0,
   playing: false,
   speed: 30,
+  balance: 0,
+  riskPercent: 1,
+  orders: [],
+  selectedDrawing: null,
+  lastOrderResult: null,
 
   dismissError: () => set({ error: null, status: 'idle' }),
 
@@ -107,30 +188,153 @@ export const useSessionStore = create<SessionState>((set) => ({
       return { playing: !s.playing }
     }),
   pause: () => set({ playing: false }),
+  // Forward index moves evaluate open/pending orders over the candles that
+  // were just revealed (Phase 5): one candle on a tick, a whole range on a
+  // jump. Backward moves never touch the account.
   advance: () =>
     set((s) => {
       const total = sessionBaseCandles(s.session).length
-      return { currentIndex: Math.min(s.currentIndex + 1, total) }
+      const nextIndex = Math.min(s.currentIndex + 1, total)
+      if (nextIndex <= s.currentIndex) return { currentIndex: nextIndex }
+      const ev = evaluateOrders(
+        s.orders,
+        s.balance,
+        sessionBaseCandles(s.session),
+        s.currentIndex,
+        nextIndex
+      )
+      return { currentIndex: nextIndex, orders: ev.orders, balance: ev.balance }
     }),
   stepForward: () =>
     set((s) => {
       const total = sessionBaseCandles(s.session).length
-      return { playing: false, currentIndex: Math.min(s.currentIndex + 1, total) }
+      const nextIndex = Math.min(s.currentIndex + 1, total)
+      const ev = evaluateOrders(
+        s.orders,
+        s.balance,
+        sessionBaseCandles(s.session),
+        s.currentIndex,
+        nextIndex
+      )
+      return { playing: false, currentIndex: nextIndex, orders: ev.orders, balance: ev.balance }
     }),
   stepBackward: () =>
     set((s) => ({ playing: false, currentIndex: Math.max(s.currentIndex - 1, 0) })),
   skipToStart: () => set({ playing: false, currentIndex: 0 }),
   skipToEnd: () =>
-    set((s) => ({
-      playing: false,
-      currentIndex: sessionBaseCandles(s.session).length
-    })),
+    set((s) => {
+      const total = sessionBaseCandles(s.session).length
+      const ev = evaluateOrders(
+        s.orders,
+        s.balance,
+        sessionBaseCandles(s.session),
+        s.currentIndex,
+        total
+      )
+      return { playing: false, currentIndex: total, orders: ev.orders, balance: ev.balance }
+    }),
   goToTimestamp: (ts) =>
-    set((s) => ({
-      playing: false,
-      currentIndex: indexAtOrAfter(sessionBaseCandles(s.session), ts)
-    })),
+    set((s) => {
+      const nextIndex = indexAtOrAfter(sessionBaseCandles(s.session), ts)
+      const ev = evaluateOrders(
+        s.orders,
+        s.balance,
+        sessionBaseCandles(s.session),
+        s.currentIndex,
+        nextIndex
+      )
+      return { playing: false, currentIndex: nextIndex, orders: ev.orders, balance: ev.balance }
+    }),
   setSpeed: (speed) => set({ speed }),
+
+  // --- simulated account + orders (Phase 5) ---
+  submitOrder: (input) => {
+    const s = get()
+    if (!s.session || s.status !== 'ready') {
+      set({ lastOrderResult: { ok: false, message: 'Start a session first.' } })
+      return
+    }
+    const fin = (v: number): boolean => Number.isFinite(v) && v > 0
+    if (!fin(input.stopLoss) || !fin(input.takeProfit) || input.riskPercent <= 0) {
+      set({
+        lastOrderResult: { ok: false, message: 'Stop-loss, take-profit and risk must be set.' }
+      })
+      return
+    }
+    if (input.stopLoss === input.takeProfit) {
+      set({ lastOrderResult: { ok: false, message: 'Stop-loss and take-profit must differ.' } })
+      return
+    }
+    // Level sanity, per direction. Market orders fill at the next candle's open
+    // (entry price unknown ahead of time) — only the SL/TP pair must bracket a
+    // plausible entry. Limit/stop orders fill AT their order price, so the
+    // levels must bracket THAT price.
+    if (input.orderType !== 'market') {
+      if (!fin(input.orderPrice)) {
+        set({ lastOrderResult: { ok: false, message: 'Entry price must be set.' } })
+        return
+      }
+      const okLevels =
+        input.direction === 'long'
+          ? input.stopLoss < input.orderPrice && input.orderPrice < input.takeProfit
+          : input.takeProfit < input.orderPrice && input.orderPrice < input.stopLoss
+      if (!okLevels) {
+        set({
+          lastOrderResult: {
+            ok: false,
+            message:
+              input.direction === 'long'
+                ? 'For a long: stop-loss < entry < take-profit.'
+                : 'For a short: take-profit < entry < stop-loss.'
+          }
+        })
+        return
+      }
+    } else {
+      const okLevels =
+        input.direction === 'long'
+          ? input.stopLoss < input.takeProfit
+          : input.takeProfit < input.stopLoss
+      if (!okLevels) {
+        set({
+          lastOrderResult: {
+            ok: false,
+            message:
+              input.direction === 'long'
+                ? 'For a long: stop-loss must sit below take-profit.'
+                : 'For a short: take-profit must sit below stop-loss.'
+          }
+        })
+        return
+      }
+    }
+    const order: Order = {
+      id: nextOrderId(),
+      drawingId: input.drawingId,
+      symbol: s.session.asset.id,
+      orderType: input.orderType,
+      direction: input.direction,
+      orderPrice: input.orderPrice,
+      stopLoss: input.stopLoss,
+      takeProfit: input.takeProfit,
+      riskPercent: input.riskPercent,
+      submissionIndex: s.currentIndex,
+      status: 'pending'
+    }
+    set({
+      orders: [...s.orders, order],
+      lastOrderResult: {
+        ok: true,
+        message: `${input.orderType === 'market' ? 'Market' : input.orderType === 'limit' ? 'Limit' : 'Stop'} ${input.direction} order placed (pending).`
+      }
+    })
+  },
+  setRiskPercent: (pct) => set({ riskPercent: Math.min(100, Math.max(0, pct)) }),
+  setSelectedDrawing: (selection) =>
+    set((s) => {
+      if (selection?.drawingId === s.selectedDrawing?.drawingId) return s
+      return { selectedDrawing: selection }
+    }),
 
   startSession: async (input) => {
     // One batch call downloads every timeframe for the range (cache-first;
@@ -148,7 +352,11 @@ export const useSessionStore = create<SessionState>((set) => ({
       error: null,
       session: null,
       currentIndex: 0,
-      playing: false
+      playing: false,
+      balance: input.balance,
+      orders: [],
+      selectedDrawing: null,
+      lastOrderResult: null
     })
     try {
       const raw = await window.api.downloadData(request)
@@ -187,9 +395,79 @@ export const useSessionStore = create<SessionState>((set) => ({
         sources[tfRes.timeframe as Timeframe] = tfRes.source
       }
 
+      // --- Run-up: a full 24 hours of context candles before the session ---
+      // The run-up = the most recent whole trading days before `startDate`
+      // whose candles add up to ≥ 24h of market time (walking days backward
+      // spans weekends/holidays and sees through short trading days, e.g. an
+      // index session ≈ 6-7h). Days are pulled ONE AT A TIME so we stop as
+      // soon as the base timeframe reaches 24h instead of downloading the
+      // whole lookback for nothing — and the budget adapts to the network
+      // state: a session that just downloaded from Dukascopy gets a generous
+      // window (its network is clearly working), a fully-cached session gets a
+      // short one (it's usually offline/rate-limited). The run-up can never
+      // abort the session: whatever lands is kept, then the session starts.
+      const runUpByTimeframe: Partial<Record<Timeframe, Candle[]>> = {}
+      const runUpEnd = isoAddDays(input.startDate, -1)
+      const windowCandles: Partial<Record<Timeframe, Candle[]>> = {}
+      const runUpMs = (tf: Timeframe): number => (windowCandles[tf]?.length ?? 0) * timeframeMs(tf)
+      const usedNetwork = res.timeframes.some((tfRes) => tfRes.source !== 'cache')
+      const runUpBudgetMs = usedNetwork ? RUNUP_NETWORK_BUDGET_MS : RUNUP_CACHEONLY_BUDGET_MS
+      const runUpStartedAt = Date.now()
+      for (let back = 1; back <= SESSION_RUNUP_LOOKBACK_DAYS; back++) {
+        if (runUpMs(input.timeframe) >= RUNUP_TARGET_MS) break
+        const remaining = runUpBudgetMs - (Date.now() - runUpStartedAt)
+        if (remaining <= 0) break
+        const day = isoAddDays(runUpEnd, -(back - 1))
+        const dayFetch = window.api.downloadData({
+          symbol: input.asset.id,
+          timeframe: input.timeframe,
+          timeframes: [...TIMEFRAMES],
+          startDate: day,
+          endDate: day
+        })
+        // Usually the `downloadData` above resolves on its own (cache days are
+        // instant; a live day takes a few seconds per timeframe), but if the
+        // whole budget drains mid-day we proceed without it — the fetch keeps
+        // running in the main process and simply fills the cache for the next
+        // session. Swallow late settles either way.
+        const settled = await Promise.race([
+          dayFetch.then(
+            () => true,
+            () => false // a run-up fetch failure must never fail the session
+          ),
+          sleep(remaining).then(() => false)
+        ])
+        void dayFetch.then(
+          () => undefined,
+          () => undefined
+        )
+        if (!settled) break
+        for (const tf of Object.keys(candlesByTimeframe) as Timeframe[]) {
+          const data = await window.api.getCachedData({
+            symbol: input.asset.id,
+            timeframe: tf,
+            startDate: day,
+            endDate: day
+          })
+          if (!data.ok || data.candles.length === 0) continue
+          const prev = windowCandles[tf]
+          // Earlier days are fetched after later ones — prepend to keep the
+          // window ascending.
+          windowCandles[tf] = prev ? data.candles.concat(prev) : data.candles
+        }
+      }
+
+      // Trim each timeframe's window down to its most recent ≥ 24h of candles.
+      for (const tf of Object.keys(candlesByTimeframe) as Timeframe[]) {
+        const win = windowCandles[tf]
+        if (!win || win.length === 0) continue
+        const runUp = runUpTail(win, timeframeMs(tf))
+        if (runUp.length > 0) runUpByTimeframe[tf] = runUp
+      }
+
       set({
         status: 'ready',
-        session: { ...input, candlesByTimeframe, sources }
+        session: { ...input, candlesByTimeframe, runUpByTimeframe, sources }
       })
     } catch (err) {
       set({ status: 'error', error: err instanceof Error ? err.message : String(err) })

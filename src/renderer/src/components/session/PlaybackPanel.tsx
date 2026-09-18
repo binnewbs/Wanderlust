@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { ChevronLeft, ChevronRight, Gauge, Pause, Play, SkipBack, SkipForward } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { sessionBaseCandles, useSessionStore } from '@/store/session'
+import { sessionBaseCandles, revealedTime, useSessionStore } from '@/store/session'
 
 /**
  * Playback control panel (Phase 4 wires the loop).
@@ -33,7 +33,10 @@ export default function PlaybackPanel(): React.JSX.Element {
 
   const baseCandles = sessionBaseCandles(session)
   const totalCandles = baseCandles.length
-  const currentTime = baseCandles[currentIndex - 1]?.timestamp
+  // The readout shows the last revealed candle INCLUDING run-up context: at
+  // index 0 that's the run-up day's last candle, so a fresh session reads e.g.
+  // "2024-01-02 23:59 UTC" (yesterday's close) instead of '—'.
+  const currentTime = revealedTime(session, currentIndex)
 
   const togglePlay = useSessionStore((s) => s.togglePlay)
   const stepForward = useSessionStore((s) => s.stepForward)

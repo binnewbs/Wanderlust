@@ -4,6 +4,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { registerIpcHandlers } from './ipc'
 import { closeDb } from './db'
 import { runDbSmokeTest } from './smoke'
+import { TIMEFRAMES } from '../shared/timeframes'
 import icon from '../../resources/icon.png?asset'
 
 function createWindow(): void {
@@ -79,10 +80,16 @@ function createWindow(): void {
 
         note('did-finish-load')
 
+        // Phase 5 E2E: mount the chart's test handle (window.__wanderlust) —
+        // VelaChart creates it when the page hash contains 'e2e', so set it
+        // before any session mounts. It lets the journey inject + select a
+        // Long/Short Position drawing exactly like the toolbar would.
+        await js(`location.hash = '#e2e'`).catch(() => null)
+
         // ---- 1. UI shell: header, empty state, session button ----
         const shellDom = await js(`({
           title: document.querySelector('h1')?.textContent ?? null,
-          phaseBadge: document.body.textContent.includes('sessions & chart'),
+          phaseBadge: document.body.textContent.includes('Phase 5'),
           hasEmptyState: document.body.textContent.includes('No session yet'),
           hasNewSessionBtn: [...document.querySelectorAll('button')].some((b) =>
             b.textContent?.includes('New Session')
@@ -104,17 +111,31 @@ function createWindow(): void {
           `window.api.getCachedData(${JSON.stringify(range)})`
         )
         note('readback', { ok: readback.ok, count: readback.count })
+        // The run-up day (startDate − 1) must be a FULL 24 hours of candles —
+        // first candle 00:00, last 23:59 — or the "previous 24 hours" promise
+        // is broken. (The UI journey asserts the last one via playback-time.)
+        const runUpDay = await js(`window.api.getCachedData({
+          symbol: 'eurusd', timeframe: 'm1', startDate: '2024-01-02', endDate: '2024-01-02'
+        }).then((d) => ({
+          count: d.candles.length,
+          first: d.candles[0] ? new Date(d.candles[0].timestamp).toISOString() : null,
+          last: d.candles.length
+            ? new Date(d.candles[d.candles.length - 1].timestamp).toISOString()
+            : null
+        }))`)
+        note('runUpDay', runUpDay)
         const summary1 = await js('window.api.getCacheSummary()')
         note('summary1', summary1)
         const download2 = await js(`window.api.downloadData(${JSON.stringify(range)})`)
         note('download2', download2)
 
         // ---- 3. Batch download over IPC (session behavior: many timeframes) ----
-        // Pre-caches m15/h1/d1 for 01-02..04 (superset of the UI's 02..03), so
-        // the UI journey below only needs network for the remaining timeframes.
+        // Pre-caches EVERY timeframe for 01-02..04 — a superset of the UI
+        // journey's session (03..04) and its run-up day (01-02) — so the UI
+        // section below is fully cache-served on a fresh database.
         const batchReq = {
           symbol: 'eurusd',
-          timeframes: ['m15', 'h1', 'd1'],
+          timeframes: [...TIMEFRAMES],
           startDate: '2024-01-02',
           endDate: '2024-01-04'
         }
@@ -167,8 +188,8 @@ function createWindow(): void {
           const from2 = document.querySelector('#ns-date-from');
           const to2 = document.querySelector('#ns-date-to');
           if (!from2 || !to2) return { ok: false, step: 'modal-fields-missing', diag: diag() };
-          setVal(from2, '2024-01-02');
-          setVal(to2, '2024-01-03');
+          setVal(from2, '2024-01-03');
+          setVal(to2, '2024-01-04');
           await sleep(200);
           const start = btn('Start Session');
           if (!start || start.disabled) return { ok: false, step: 'start-disabled' };
@@ -181,15 +202,18 @@ function createWindow(): void {
               const timeText = () =>
                 document.querySelector('[data-testid="playback-time"]')?.textContent ?? null;
 
-              // 4a. Session starts REPLAY-BLANK: index 0, no candle time.
+              // 4a. Session starts at index 0 with RUN-UP context: the chart
+              // must already be painted (yesterday's candles) and the clock
+              // shows the run-up day's close (2024-01-02 23:59 UTC), not '—'.
               const counter0 = idxText();
               const time0 = timeText();
+              const paintedAtStart = samplePainted();
 
-              // 4b. Go To: jump to 2024-01-03 → the index must land inside the
+              // 4b. Go To: jump to 2024-01-04 → the index must land inside the
               // second day (~1440 of ~2880 m1 candles) and the chart repaint.
               const gd = document.querySelector('[data-testid="playback-goto-date"]');
               if (!gd) return { ok: false, step: 'no-goto-input', diag: diag() };
-              setVal(gd, '2024-01-03');
+              setVal(gd, '2024-01-04');
               await sleep(150);
               const gb = document.querySelector('[data-testid="playback-goto-btn"]');
               if (!gb) return { ok: false, step: 'no-goto-btn', diag: diag() };
@@ -265,9 +289,10 @@ function createWindow(): void {
               return {
                 ok: true,
                 canvases,
-                // replay blank → go-to → step → play
+                // run-up context → go-to → step → play
                 counter0,
                 time0,
+                paintedAtStart,
                 counterGo,
                 timeGo,
                 paintedGo,
@@ -301,6 +326,229 @@ function createWindow(): void {
         await shot('/tmp/opencode/wanderlust-2-session.png')
         note('ui', ui)
 
+        // ---- 4b. Run-up GRACE check: a session in a fully-CACHED era whose
+        // run-up days are NOT cached (nothing exists on disk before
+        // 2026-09-01). The run-up phase must still terminate within its
+        // cache-only budget (no long stall) and the session MUST start —
+        // a missing / undownloadable run-up can never block or abort it.
+        // Note: if Dukascopy is reachable this run-up may actually download.
+        const ui2 = await js(`(async () => {
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          const btn = (txt) =>
+            [...document.querySelectorAll('button')].find((b) => b.textContent?.includes(txt));
+          const setVal = (el, v) => {
+            const proto = window.HTMLInputElement.prototype;
+            Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+          };
+          if (!btn('New Session')) return { ok: false, step: 'no-open-button2' };
+          btn('New Session').click();
+          await sleep(300);
+          const from2 = document.querySelector('#ns-date-from');
+          const to2 = document.querySelector('#ns-date-to');
+          if (!from2 || !to2) return { ok: false, step: 'modal-fields-missing2' };
+          setVal(from2, '2026-09-01');
+          setVal(to2, '2026-09-02');
+          await sleep(200);
+          const start2 = btn('Start Session');
+          if (!start2 || start2.disabled) return { ok: false, step: 'start-disabled2' };
+          start2.click();
+          for (let i = 0; i < 100; i++) {
+            // The NEW session always starts at index 0 — poll for that (the
+            // old session's chart/state must be fully replaced first), then
+            // the download + run-up phases have ended and the chart re-mounted.
+            const idx = document.querySelector('[data-testid="playback-index"]')?.textContent;
+            if (
+              idx === '0' &&
+              document.querySelectorAll('canvas').length > 0 &&
+              document.body.textContent.includes('Playback')
+            ) {
+              return {
+                ok: true,
+                counter0: idx,
+                time0: document.querySelector('[data-testid="playback-time"]')?.textContent ?? null,
+                hasSessionChip: document.body.textContent.includes('EUR/USD')
+              };
+            }
+            await sleep(500);
+          }
+          return { ok: false, step: 'no-ready2', diag: document.body.textContent.slice(0, 300) };
+        })()`)
+        await shot('/tmp/opencode/wanderlust-3-runup-grace.png')
+        note('ui2', ui2)
+
+        // ---- 4c. Phase 5: order execution + tick-by-tick evaluation. Runs on
+        // the ui2 session (2026-09-01..02, m1 base) parked at index 0. Four
+        // orders go through the full New Order flow, each seeded by a SELECTED
+        // Long/Short Position drawing (SL/TP locked to the tool), stepping one
+        // candle at a time so each fills/closes deterministically on a known
+        // candle (session candle index = evaluation index):
+        //   A market long → fills at candle[4] open, take-profit at its high
+        //   B market long → fills at candle[5] open, stop-loss at its low
+        //   C limit  long → fills at candle[6] low,  take-profit at its high
+        //   D stop   long → fills at candle[7] low,  take-profit at its high
+        // Every expected pnl/balance is recomputed from the same cached candles
+        // the session plays, with risk = 1% of the then-current balance.
+        // Also exercised: selection→menu prefill, SL/TP locked, order-type
+        // switch, risk % templates, stop-first evaluation, live balance + the
+        // closed-trade rows (1 SL, 3 TP).
+        const ui3 = await js(`(async () => {
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          const q = (s) => document.querySelector(s);
+          const qa = (s) => [...document.querySelectorAll(s)];
+          const text = (s) => q(s)?.textContent?.trim() ?? null;
+          const click = (s) => { const el = q(s); if (!el) return false; el.click(); return true; };
+          const fail = (step, extra = {}) => ({ ok: false, step, ...extra });
+          const near = (a, b) => Math.abs(a - b) < 0.01;
+          const readBalance = () =>
+            Number((text('[data-testid="trading-balance"]') ?? '').replace(/[^0-9.+-]/g, ''));
+          const count = (sel) => {
+            const m = (text(sel) ?? '').match(/\\d+/);
+            return m ? Number(m[0]) : NaN;
+          };
+          const wl = window.__wanderlust;
+          if (!wl) return fail('no-e2e-handle');
+
+          const res = await window.api.getCachedData({
+            symbol: 'eurusd', timeframe: 'm1', startDate: '2026-09-01', endDate: '2026-09-02'
+          });
+          const candles = res.candles ?? [];
+          if (candles.length < 9) return fail('no-candles', { count: candles.length });
+
+          const stepTo = async (n) => {
+            for (let i = 0; i < n * 4 + 10; i++) {
+              if ((q('[data-testid="playback-index"]')?.textContent ?? '').trim() === String(n)) return true;
+              if (!click('[data-testid="playback-step"]')) return false;
+              await sleep(50);
+            }
+            return (q('[data-testid="playback-index"]')?.textContent ?? '').trim() === String(n);
+          };
+          const placeAndSelect = async (lv) => {
+            const id = wl.addPosition(lv);
+            if (!id) return false;
+            wl.chart.drawings.select(id);
+            await sleep(150);
+            return true;
+          };
+          const openOrderMenu = async (type) => {
+            if (!click('[data-testid="new-order-btn"]')) return false;
+            await sleep(300);
+            const typeBtn = qa('[data-testid="order-type"] button').find(
+              (b) => (b.textContent ?? '').trim() === type
+            );
+            if (!typeBtn) return false;
+            typeBtn.click();
+            await sleep(120);
+            return true;
+          };
+          const confirmOrder = async () => {
+            click('[data-testid="confirm-order"]');
+            await sleep(300);
+            return !q('[data-testid="confirm-order"]'); // modal closed ⇒ accepted
+          };
+
+          // ---- expected values, recomputed from the very candles being played
+          const startBalance = readBalance();
+          const cA = candles[4], cB = candles[5], cC = candles[6], cD = candles[7];
+          const sizeA = (startBalance * 0.01) / (cA.open - cA.low + 0.002);
+          const pnlA = (cA.high - cA.open) * sizeA; // TP at high, long
+          const balAfterA = startBalance + pnlA;
+          const bDist = cB.open - cB.low;
+          const sizeB = bDist > 0 ? (balAfterA * 0.01) / bDist : 0; // open==low ⇒ 0 size
+          const pnlB = (cB.low - cB.open) * sizeB; // SL at low, long ⇒ ≤ 0
+          const balAfterB = balAfterA + pnlB;
+          const sizeC = (balAfterB * 0.01) / 0.002; // |entry − SL| = 0.002 fixed
+          const pnlC = (cC.high - cC.low) * sizeC;
+          const balAfterC = balAfterB + pnlC;
+          const sizeD = (balAfterC * 0.01) / 0.002;
+          const pnlD = (cD.high - cD.low) * sizeD;
+          const balFinal = balAfterC + pnlD;
+
+          // ---- 0. park the replay (start index = currentIndex 0)
+          if (!(await stepTo(4))) return fail('park-index', { idx: text('[data-testid="playback-index"]') });
+          if (!near(startBalance, 100000)) return fail('seed-balance', { startBalance });
+
+          // ---- A. market long from the SELECTED tool; TP on candle[4]
+          if (!(await placeAndSelect({ entry: cA.close, stop: cA.low - 0.002, target: cA.high, time: cA.timestamp })))
+            return fail('place-a');
+          if (!text('[data-testid="selected-position"]')) return fail('selection-a');
+          if (!(await openOrderMenu('Market'))) return fail('open-a');
+          const sourceA = text('[data-testid="order-source"]') ?? '';
+          const slDisabled = q('[data-testid="order-sl"]')?.disabled === true;
+          const tpDisabled = q('[data-testid="order-tp"]')?.disabled === true;
+          const entryIsMarket = (q('[data-testid="order-entry"]')?.value ?? '') === 'Market';
+          if (!(await confirmOrder())) return fail('confirm-a');
+          if (count('[data-testid="pending-count"]') !== 1) return fail('pending-a', { c: text('[data-testid="pending-count"]') });
+          if (!near(readBalance(), startBalance)) return fail('balance-frozen-a');
+          if (!(await stepTo(5))) return fail('step-a');
+          if (count('[data-testid="closed-count"]') !== 1) return fail('closed-a', { c: text('[data-testid="closed-count"]') });
+          if (!near(readBalance(), balAfterA)) return fail('pnl-a', { actual: readBalance(), expected: balAfterA, pnlA });
+
+          // ---- B. market long; SL on candle[5]
+          if (!(await placeAndSelect({ entry: cB.close, stop: cB.low, target: cB.high + 0.002, time: cB.timestamp })))
+            return fail('place-b');
+          if (!(await openOrderMenu('Market'))) return fail('open-b');
+          if (!(await confirmOrder())) return fail('confirm-b');
+          if (count('[data-testid="pending-count"]') !== 1) return fail('pending-b');
+          if (!(await stepTo(6))) return fail('step-b');
+          if (count('[data-testid="closed-count"]') !== 2) return fail('closed-b', { c: text('[data-testid="closed-count"]') });
+          if (!near(readBalance(), balAfterB)) return fail('pnl-b', { actual: readBalance(), expected: balAfterB, pnlB });
+
+          // ---- C. LIMIT long; fills at candle[6] low, TP at its high.
+          // Risk-template buttons must change the live size preview.
+          if (!(await placeAndSelect({ entry: cC.low, stop: cC.low - 0.002, target: cC.high, time: cC.timestamp })))
+            return fail('place-c');
+          if (!(await openOrderMenu('Limit'))) return fail('open-c');
+          const previewAt1 = text('[data-testid="size-preview"]') ?? '';
+          const risk2 = qa('[data-testid="risk-templates"] button').find((b) => (b.textContent ?? '').trim() === '2%');
+          if (!risk2) return fail('risk-template-missing');
+          risk2.click();
+          await sleep(120);
+          const previewAt2 = text('[data-testid="size-preview"]') ?? '';
+          const risk1 = qa('[data-testid="risk-templates"] button').find((b) => (b.textContent ?? '').trim() === '1%');
+          if (risk1) { risk1.click(); await sleep(120); }
+          if (previewAt1 === previewAt2) return fail('risk-template-inert', { previewAt1, previewAt2 });
+          if (!(await confirmOrder())) return fail('confirm-c');
+          if (count('[data-testid="pending-count"]') !== 1) return fail('pending-c');
+          if (!(await stepTo(7))) return fail('step-c');
+          if (count('[data-testid="closed-count"]') !== 3) return fail('closed-c', { c: text('[data-testid="closed-count"]') });
+          if (!near(readBalance(), balAfterC)) return fail('pnl-c', { actual: readBalance(), expected: balAfterC, pnlC });
+
+          // ---- D. STOP long; fills at candle[7] low, TP at its high
+          if (!(await placeAndSelect({ entry: cD.low, stop: cD.low - 0.002, target: cD.high, time: cD.timestamp })))
+            return fail('place-d');
+          if (!(await openOrderMenu('Stop'))) return fail('open-d');
+          if (!(await confirmOrder())) return fail('confirm-d');
+          if (count('[data-testid="pending-count"]') !== 1) return fail('pending-d');
+          if (!(await stepTo(8))) return fail('step-d');
+          if (count('[data-testid="closed-count"]') !== 4) return fail('closed-d', { c: text('[data-testid="closed-count"]') });
+
+          // ---- final state
+          const closedFinal = count('[data-testid="closed-count"]');
+          const activeFinal = count('[data-testid="active-count"]');
+          const pendingFinal = count('[data-testid="pending-count"]');
+          const balActual = readBalance();
+          const headerActual = Number((text('[data-testid="header-balance"]') ?? '').replace(/[^0-9.+-]/g, ''));
+          const slRows = qa('[data-testid="closed-row"]').filter((r) => r.textContent.includes('SL')).length;
+          const tpRows = qa('[data-testid="closed-row"]').filter((r) => r.textContent.includes('TP')).length;
+          return {
+            ok:
+              closedFinal === 4 && activeFinal === 0 && pendingFinal === 0 &&
+              near(balActual, balFinal) && near(headerActual, balFinal) &&
+              slRows === 1 && tpRows === 3,
+            step: 'final',
+            closedFinal, activeFinal, pendingFinal,
+            balActual, balFinal, headerActual,
+            slRows, tpRows,
+            startBalance, sourceA, slDisabled, tpDisabled, entryIsMarket,
+            previewRiskTemplatesWorked: previewAt1 !== previewAt2,
+            pnls: { pnlA, pnlB, pnlC, pnlD },
+            candles: { cA: cA.timestamp, cB: cB.timestamp, cC: cC.timestamp, cD: cD.timestamp }
+          };
+        })()`)
+        await shot('/tmp/opencode/wanderlust-4-trading.png')
+        note('ui3', ui3)
+
         console.log('[e2e] shell      =', JSON.stringify(shellDom))
         console.log('[e2e] download#1 =', JSON.stringify(download1))
         console.log(
@@ -312,9 +560,13 @@ function createWindow(): void {
         console.log('[e2e] batch      =', JSON.stringify(batch))
         console.log('[e2e] summary2   =', JSON.stringify(summary2))
         console.log('[e2e] ui journey =', JSON.stringify(ui))
+        console.log('[e2e] ui2 grace  =', JSON.stringify(ui2))
+        console.log('[e2e] ui3 orders =', JSON.stringify(ui3))
         console.log('[e2e] console   =', JSON.stringify(consoleLogs.slice(-8)))
         console.log('[e2e] console-ui =', JSON.stringify(consoleLogs.slice(logsBefore).slice(0, 6)))
-        console.log('[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session}.png')
+        console.log(
+          '[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading}.png'
+        )
       } catch (err) {
         console.error('[e2e] FAILED', err)
         trace.push({ phase: 'FAILED', at: Date.now(), detail: String(err) })

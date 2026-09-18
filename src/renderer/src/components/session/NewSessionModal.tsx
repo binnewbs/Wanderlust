@@ -176,7 +176,9 @@ export default function NewSessionModal({
                   ))}
                 </select>
                 <p className="mt-1 text-[11px] text-zinc-500">
-                  Initial view — every timeframe is downloaded, switch on the chart anytime.
+                  Initial view — every timeframe is downloaded, switch on the chart anytime. The
+                  previous 24 hours of candles are pre-loaded as run-up context, so the chart starts
+                  with a full day of price action instead of a blank screen.
                 </p>
               </div>
               <div>

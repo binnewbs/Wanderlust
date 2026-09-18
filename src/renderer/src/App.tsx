@@ -5,6 +5,7 @@ import { useSessionStore } from '@/store/session'
 import VelaChart from '@/components/chart/VelaChart'
 import NewSessionModal from '@/components/session/NewSessionModal'
 import PlaybackPanel from '@/components/session/PlaybackPanel'
+import TradingPanel from '@/components/session/TradingPanel'
 
 /**
  * Wanderlust — the backtesting session screen (Phase 3).
@@ -15,7 +16,9 @@ import PlaybackPanel from '@/components/session/PlaybackPanel'
  * ready, the Vela workspace is mounted (per-session, keyed by the session's
  * market) with the `wanderlust` data provider serving the session's candles,
  * and the playback control panel docks below the chart. Phase 4 wires the
- * playback controls; Phase 5 adds trade execution on top of Vela's drawings.
+ * playback controls; Phase 5 adds the trading strip — New Order (seeded by the
+ * selected Long/Short Position drawing) driving the simulated account, with
+ * tick-by-tick fill/exit evaluation during playback.
  */
 
 const sourceStyles: Record<string, string> = {
@@ -28,6 +31,7 @@ export default function App(): React.JSX.Element {
   const session = useSessionStore((s) => s.session)
   const status = useSessionStore((s) => s.status)
   const error = useSessionStore((s) => s.error)
+  const balance = useSessionStore((s) => s.balance)
   const dismissError = useSessionStore((s) => s.dismissError)
 
   const [modalOpen, setModalOpen] = useState(false)
@@ -55,7 +59,7 @@ export default function App(): React.JSX.Element {
           <Activity className="size-5 text-sky-400" />
           <h1 className="text-base font-semibold tracking-tight">Wanderlust</h1>
           <span className="rounded-full border border-zinc-700 px-2 py-0.5 text-[10px] font-medium text-zinc-400">
-            Phase 3 · sessions & chart
+            Phase 5 · replay, orders & account
           </span>
           {session && (
             <span className="ml-1 hidden items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900 px-2.5 py-0.5 text-[11px] text-zinc-400 sm:flex">
@@ -74,8 +78,12 @@ export default function App(): React.JSX.Element {
         </div>
         <div className="flex items-center gap-2">
           {session && (
-            <span className="font-mono text-xs text-zinc-400">
-              ${session.balance.toLocaleString('en-US')}
+            <span
+              data-testid="header-balance"
+              className="font-mono text-xs text-zinc-400"
+              title="Live account balance"
+            >
+              ${balance.toLocaleString('en-US', { maximumFractionDigits: 2 })}
             </span>
           )}
           <Button
@@ -114,12 +122,15 @@ export default function App(): React.JSX.Element {
               <span>
                 {session.startDate} → {session.endDate}
               </span>
-              <span className="font-mono">${session.balance.toLocaleString('en-US')}</span>
+              <span className="font-mono">
+                ${balance.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+              </span>
             </div>
             <div className="relative flex-1">
               {/* Keyed per session: each session gets a fresh workspace + provider. */}
               <VelaChart key={sessionKey} symbol={session.asset.id} timeframe={session.timeframe} />
             </div>
+            <TradingPanel />
             <PlaybackPanel />
           </div>
         ) : (
