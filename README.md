@@ -2,7 +2,7 @@
 
 Wanderlust is an open-source, desktop-based backtesting application for trading. It allows traders to test their trading strategies on historical market data and analyze their performance. It is modeled after FX Replay but runs fully offline: market data is downloaded on-demand from Dukascopy and cached locally, so there are no server costs and no subscription paywalls.
 
-> **Status: Phase 2 complete** — on-demand Dukascopy downloads with day-level caching and progress events. See [Work in progress](#work-in-progress).
+> **Status: Phase 3 complete** — session UI: asset selector, cache-first download with live progress, Vela chart workspace, playback panel shell. See [Work in progress](#work-in-progress).
 
 ## Tech Stack
 
@@ -36,21 +36,32 @@ Other scripts:
 
 ```
 src/
-├── shared/ipc.ts          # IPC channel names + payload types (the contract)
+├── shared/
+│   ├── ipc.ts            # IPC channel names + payload types (the contract)
+│   └── assets.ts         # Curated Dukascopy instrument list (generated from its metadata)
 ├── main/
-│   ├── index.ts           # App entry: window creation, lifecycle
-│   ├── ipc.ts             # ipcMain.handle() registration (download / cache query / summary)
-│   ├── db.ts              # SQLite cache (schema, query, upsert, summary)
-│   ├── dukascopy.ts       # Dukascopy fetcher: per-day loop, cache skip, progress
-│   └── smoke.ts           # Dev-only SQLite smoke test
+│   ├── index.ts          # App entry: window creation, lifecycle, E2E hook
+│   ├── ipc.ts            # ipcMain.handle() registration (download / cache query / summary)
+│   ├── db.ts             # SQLite cache (schema, query, upsert, summary)
+│   ├── dukascopy.ts      # Dukascopy fetcher: per-day loop, cache skip, progress
+│   └── smoke.ts          # Dev-only SQLite smoke test
 ├── preload/
-│   ├── index.ts           # contextBridge exposing window.api.*
-│   └── index.d.ts         # Typed contract for window.api
+│   ├── index.ts          # contextBridge exposing window.api.*
+│   └── index.d.ts        # Typed contract for window.api
 └── renderer/
     └── src/
-        ├── App.tsx        # Phase 1/2 IPC smoke-test panel (temporary UI)
-        ├── components/ui/ # shadcn/ui components
-        └── assets/main.css# Tailwind v4 + shadcn theme tokens
+        ├── App.tsx       # Session screen: header, empty state, chart + playback layout
+        ├── store/
+        │   └── session.ts# Zustand: session lifecycle (idle→downloading→ready/error), progress, candles
+        ├── components/
+        │   ├── ui/           # shadcn/ui components
+        │   ├── chart/
+        │   │   ├── VelaChart.tsx  # Vela workspace wrapper (per-session mount, offline bars)
+        │   │   └── vela.ts        # timeframe + candle adapters (kept out of the component)
+        │   └── session/
+        │       ├── NewSessionModal.tsx  # asset/timeframe/range/balance + progress panel
+        │       └── PlaybackPanel.tsx    # play/pause/step/go-to/speed shell (wired in Phase 4)
+        └── assets/main.css  # Tailwind v4 + shadcn theme tokens
 ```
 
 ## IPC Contract (Phase 2)
@@ -82,11 +93,14 @@ WANDERLUST_SMOKE=1 ./node_modules/electron/dist/electron .
 
 # Full round trip through the real renderer — needs a build (`npm run build`) and
 # network access to Dukascopy for the first download:
-#   1. downloadData     → 'dukascopy' (fresh) or 'mixed'/'cache' (partially cached)
-#   2. getCachedData    → read what was persisted
-#   3. getCacheSummary  → cached range shown
-#   4. downloadData     → 'cache' (instant cache hit)
-# Then asserts DOM + writes a screenshot to /tmp/opencode/wanderlust-ui.png
+#   1. UI shell      → header, phase badge, empty state, New Session button
+#   2. downloadData  → 'dukascopy' (fresh) or 'mixed'/'cache' (partially cached)
+#   3. getCachedData / getCacheSummary → persistence readback
+#   4. downloadData  → 'cache' (instant cache hit)
+#   5. UI journey    → open the New Session modal, set a cached range, click
+#      Start Session, wait for the Vela workspace to mount and PAINT (canvas
+#      pixel sampling), assert the playback panel + session chip
+# Writes screenshots to /tmp/opencode/wanderlust-{1-empty,2-session}.png
 WANDERLUST_E2E=1 ./node_modules/electron/dist/electron .
 ```
 
@@ -103,7 +117,7 @@ WANDERLUST_E2E=1 ./node_modules/electron/dist/electron .
 
 - **Phase 1 (done):** electron-vite scaffold, dependencies (Zustand, Vela, lucide-react, shadcn/ui, better-sqlite3, dukascopy-node), IPC handlers + preload bridge, SQLite cache schema.
 - **Phase 2 (done):** on-demand Dukascopy fetching (`getHistoricalRates` in `src/main/dukascopy.ts`) — day-by-day loop with per-day cache skip, progress events, gap-fill merging (`source: cache | dukascopy | mixed`), and unknown-symbol/timeframe validation.
-- **Phase 3 (next):** asset selector UI + Vela chart workspace.
-- **Phase 4:** playback loop.
+- **Phase 3 (done):** session UI — New Session modal (asset selector backed by `src/shared/assets.ts`, timeframe, date range, starting balance), live download progress panel, and the `@luxalgo/vela/workspace` chart mounted per session with the downloaded candles as offline bars (`MarketConfig.data`, no provider). The playback control panel (Play/Pause, step, go-to, speed) is rendered but its controls stay disabled until Phase 4 wires the playback loop.
+- **Phase 4 (next):** playback loop.
 - **Phase 5:** trade execution & position management.
 - **Phase 6:** analytics & journaling.
