@@ -2,7 +2,7 @@
 
 Wanderlust is an open-source, desktop-based backtesting application for trading. It allows traders to test their trading strategies on historical market data and analyze their performance. It is modeled after FX Replay but runs fully offline: market data is downloaded on-demand from Dukascopy and cached locally, so there are no server costs and no subscription paywalls.
 
-> **Status: Phase 3 complete** — session UI: asset selector, cache-first download of all timeframes with live progress, Vela chart workspace with a session data provider (timeframe switching works), playback panel shell. See [Work in progress](#work-in-progress).
+> **Status: Phase 4 complete** — the playback loop. Sessions start replay-blank and the chart reveals `masterCandleArray.slice(0, currentIndex)` as you play: Play/Pause, step forward/back, skip to start/end, a speed slider, and an unlimited Go-To-date that jumps the reveal in place. See [Work in progress](#work-in-progress).
 
 ## Tech Stack
 
@@ -63,7 +63,7 @@ src/
         │   │   └── vela.ts        # timeframe + candle adapters (kept out of the component)
         │   └── session/
         │       ├── NewSessionModal.tsx  # asset/timeframe/range/balance + progress panel
-        │       └── PlaybackPanel.tsx    # play/pause/step/go-to/speed shell (wired in Phase 4)
+        │       └── PlaybackPanel.tsx    # play/pause/step/skip/speed slider + go-to-date
         └── assets/main.css  # Tailwind v4 + shadcn theme tokens
 ```
 
@@ -122,7 +122,7 @@ WANDERLUST_E2E=1 ./node_modules/electron/dist/electron .
 
 - **Phase 1 (done):** electron-vite scaffold, dependencies (Zustand, Vela, lucide-react, shadcn/ui, better-sqlite3, dukascopy-node), IPC handlers + preload bridge, SQLite cache schema.
 - **Phase 2 (done):** on-demand Dukascopy fetching (`getHistoricalRates` in `src/main/dukascopy.ts`) — day-by-day loop with per-day cache skip, progress events, gap-fill merging (`source: cache | dukascopy | mixed`), and unknown-symbol/timeframe validation.
-- **Phase 3 (done):** session UI — New Session modal (asset selector backed by `src/shared/assets.ts`, initial chart timeframe, date range, starting balance), live download progress panel, and the `@luxalgo/vela/workspace` chart mounted per session. A session downloads **every timeframe (m1…d1) in one batch** (`data:download` with `timeframes`, progress scaled across the batch) into the SQLite cache, and the chart is driven by a `wanderlust` data provider (`createSessionDataProvider`) that serves each timeframe's candles from the session store — so the workspace's timeframe bar switches datasets live instead of going blank. The playback control panel (Play/Pause, step, go-to, speed) is rendered but its controls stay disabled until Phase 4 wires the playback loop.
-- **Phase 4 (next):** playback loop.
-- **Phase 5:** trade execution & position management.
+- **Phase 3 (done):** session UI — New Session modal (asset selector backed by `src/shared/assets.ts`, initial chart timeframe, date range, starting balance), live download progress panel, and the `@luxalgo/vela/workspace` chart mounted per session. A session downloads **every timeframe (m1…d1) in one batch** (`data:download` with `timeframes`, progress scaled across the batch) into the SQLite cache, and the chart is driven by a `wanderlust` data provider (`createSessionDataProvider`) that serves each timeframe's candles from the session store — so the workspace's timeframe bar switches datasets live instead of going blank.
+- **Phase 4 (done):** the playback loop. `currentIndex` (default 0) lives in the session store; the chart only ever shows the revealed slice — `masterCandleArray.slice(0, currentIndex)` on the session's timeframe, or the candles opened up to the playback point on any other timeframe (switching timeframe mid-session shows only what "has happened" so far). `PlaybackPanel` runs the loop (`setInterval`, delay from the speed slider 1–120 → 5 s–50 ms per candle), with step forward/back, skip to start/end, and Go To (jump to a date → binary-search `currentIndex`). `VelaChart` pushes each reveal through `chart.setMarket({ timeframe, data, visibleRange })` — an in-place market switch, idempotent per `(timeframe, index)` so the `market:changed` echo from each push converges instead of re-pushing into an infinite loop; the view slides a fixed 120-bar window with the newest revealed bar. The provider's `getBars` is slice-aware too, so a topbar timeframe switch during playback never flashes the full dataset.
+- **Phase 5 (next):** trade execution & position management.
 - **Phase 6:** analytics & journaling.

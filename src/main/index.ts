@@ -38,6 +38,28 @@ function createWindow(): void {
   mainWindow.webContents.once('did-finish-load', () => {
     void (async () => {
       if (process.env['WANDERLUST_E2E'] !== '1') return
+      // Trace every phase to a file + stdout so a hang is attributable even if
+      // buffered stdout is lost when we app.exit(). A watchdog bounds the whole
+      // run so a stuck IPC/network call can't stall forever.
+      const trace: Array<{ phase: string; at: number; detail?: unknown }> = []
+      const writeTrace = async (): Promise<void> => {
+        try {
+          const { writeFileSync } = await import('fs')
+          writeFileSync('/tmp/opencode/e2e-trace.json', JSON.stringify(trace, null, 2))
+        } catch {
+          /* best-effort */
+        }
+      }
+      const note = (phase: string, detail?: unknown): void => {
+        trace.push({ phase, at: Date.now(), detail })
+        console.log('[e2e]', phase, detail === undefined ? '' : JSON.stringify(detail))
+      }
+      const watchdog = setTimeout(() => {
+        void writeTrace().then(() => {
+          console.error('[e2e] TIMEOUT')
+          app.exit(2)
+        })
+      }, 150_000)
       try {
         // Collect renderer console output so page-level errors/warnings are
         // visible in the E2E log (canvas pixels prove the chart painted).
@@ -54,6 +76,8 @@ function createWindow(): void {
           const { writeFileSync } = await import('fs')
           writeFileSync(file, image.toPNG())
         }
+
+        note('did-finish-load')
 
         // ---- 1. UI shell: header, empty state, session button ----
         const shellDom = await js(`({
@@ -74,12 +98,16 @@ function createWindow(): void {
           endDate: '2024-01-04'
         }
         const download1 = await js(`window.api.downloadData(${JSON.stringify(range)})`)
+        note('download1', download1)
         await js('new Promise(r => setTimeout(r, 250))') // let progress events flush
         const readback = await js<{ ok: boolean; count: number }>(
           `window.api.getCachedData(${JSON.stringify(range)})`
         )
+        note('readback', { ok: readback.ok, count: readback.count })
         const summary1 = await js('window.api.getCacheSummary()')
+        note('summary1', summary1)
         const download2 = await js(`window.api.downloadData(${JSON.stringify(range)})`)
+        note('download2', download2)
 
         // ---- 3. Batch download over IPC (session behavior: many timeframes) ----
         // Pre-caches m15/h1/d1 for 01-02..04 (superset of the UI's 02..03), so
@@ -91,9 +119,11 @@ function createWindow(): void {
           endDate: '2024-01-04'
         }
         const batch = await js(`window.api.downloadData(${JSON.stringify(batchReq)})`)
+        note('batch', batch)
         const summary2 = await js('window.api.getCacheSummary()')
+        note('summary2', summary2)
 
-        // ---- 4. UI journey: modal → batch download → Vela chart → tf switch ----
+        // ---- 4. UI journey: modal → session → Vela chart → playback loop → tf switch ----
         const logsBefore = consoleLogs.length
         const ui = await js(`(async () => {
           const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -146,12 +176,61 @@ function createWindow(): void {
           for (let i = 0; i < 60; i++) {
             const canvases = document.querySelectorAll('canvas').length;
             if (canvases > 0 && document.body.textContent.includes('Playback')) {
-              const paintedBefore = samplePainted();
-              // Switch the chart to 15m via the workspace topbar. Vela
+              const idxText = () =>
+                document.querySelector('[data-testid="playback-index"]')?.textContent ?? null;
+              const timeText = () =>
+                document.querySelector('[data-testid="playback-time"]')?.textContent ?? null;
+
+              // 4a. Session starts REPLAY-BLANK: index 0, no candle time.
+              const counter0 = idxText();
+              const time0 = timeText();
+
+              // 4b. Go To: jump to 2024-01-03 → the index must land inside the
+              // second day (~1440 of ~2880 m1 candles) and the chart repaint.
+              const gd = document.querySelector('[data-testid="playback-goto-date"]');
+              if (!gd) return { ok: false, step: 'no-goto-input', diag: diag() };
+              setVal(gd, '2024-01-03');
+              await sleep(150);
+              const gb = document.querySelector('[data-testid="playback-goto-btn"]');
+              if (!gb) return { ok: false, step: 'no-goto-btn', diag: diag() };
+              gb.click();
+              await sleep(1400);
+              const counterGo = idxText();
+              const timeGo = timeText();
+              const paintedGo = samplePainted();
+
+              // 4c. Step forward: exactly +1.
+              const stepBtn = document.querySelector('[data-testid="playback-step"]');
+              if (!stepBtn) return { ok: false, step: 'no-step-btn', diag: diag() };
+              stepBtn.click();
+              await sleep(900);
+              const counterStep = idxText();
+
+              // 4d. Play at max speed (~20 bars/s): the index must visibly
+              // advance while playing, then Pause freezes it.
+              const spd = document.querySelector('[data-testid="playback-speed"]');
+              if (spd) {
+                setVal(spd, '120');
+                await sleep(250);
+              }
+              const playBtn = document.querySelector('[data-testid="playback-play"]');
+              if (!playBtn) return { ok: false, step: 'no-play-btn', diag: diag() };
+              playBtn.click();
+              await sleep(1700);
+              const playingNow = (playBtn.textContent ?? '').includes('Pause');
+              const counterDuring = idxText();
+              const timeDuring = timeText();
+              const paintedDuring = samplePainted();
+              const pauseBtn = btn('Pause');
+              if (pauseBtn) pauseBtn.click();
+              await sleep(300);
+              const counterPaused = idxText();
+
+              // 4e. Switch the chart to 15m via the workspace topbar. Vela
               // formats the active timeframe with a suffix ('1m') and hides
               // the other options in a popover: click the tf button, then the
               // '15m' option. The "wanderlust" provider must serve the new
-              // timeframe's bars from the session store.
+              // timeframe's revealed slice (not the full dataset).
               const tfButton = () =>
                 [...document.querySelectorAll('button')].find((b) => {
                   const t = (b.textContent ?? '').trim();
@@ -186,7 +265,19 @@ function createWindow(): void {
               return {
                 ok: true,
                 canvases,
-                paintedBefore,
+                // replay blank → go-to → step → play
+                counter0,
+                time0,
+                counterGo,
+                timeGo,
+                paintedGo,
+                counterStep,
+                playingNow,
+                counterDuring,
+                timeDuring,
+                paintedDuring,
+                counterPaused,
+                // timeframe switch
                 tfClicked,
                 tfOptFound,
                 tfOptClicked,
@@ -208,6 +299,7 @@ function createWindow(): void {
           return { ok: false, step: 'no-canvas', diag: diag() };
         })()`)
         await shot('/tmp/opencode/wanderlust-2-session.png')
+        note('ui', ui)
 
         console.log('[e2e] shell      =', JSON.stringify(shellDom))
         console.log('[e2e] download#1 =', JSON.stringify(download1))
@@ -225,7 +317,10 @@ function createWindow(): void {
         console.log('[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session}.png')
       } catch (err) {
         console.error('[e2e] FAILED', err)
+        trace.push({ phase: 'FAILED', at: Date.now(), detail: String(err) })
       } finally {
+        clearTimeout(watchdog)
+        await writeTrace()
         app.exit(0)
       }
     })()

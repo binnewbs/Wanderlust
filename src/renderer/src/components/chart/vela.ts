@@ -24,6 +24,18 @@ const VELA_TO_DUKA: Record<string, string> = Object.fromEntries(
   TF_PAIRS.map(([duka, vela]) => [vela, duka])
 )
 
+/** Milliseconds per bar for each Vela timeframe string (window math for the
+ *  playback view). */
+const VELA_BAR_MS: Record<string, number> = {
+  '1': 60_000,
+  '5': 300_000,
+  '15': 900_000,
+  '30': 1_800_000,
+  '60': 3_600_000,
+  '240': 14_400_000,
+  D: 86_400_000
+}
+
 export const VELA_TIMEFRAMES: string[] = TF_PAIRS.map(([, vela]) => vela)
 
 /** Dukascopy timeframe id → Vela timeframe string (chart options, topbar). */
@@ -34,6 +46,11 @@ export function velaTimeframe(timeframe: string): string {
 /** Vela timeframe string → Dukascopy timeframe id (data provider lookups). */
 export function dukascopyTimeframe(velaTf: string): string {
   return VELA_TO_DUKA[velaTf] ?? 'm1'
+}
+
+/** Milliseconds per bar of a Vela timeframe (60000 for m1, 86400000 for d1). */
+export function timeframeMs(velaTf: string): number {
+  return VELA_BAR_MS[velaTf] ?? 60_000
 }
 
 /** Map our Candle[] (ms epoch) onto Vela's OHLCV[] (time = bar open, epoch ms). */

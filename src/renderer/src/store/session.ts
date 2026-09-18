@@ -41,10 +41,27 @@ export interface SessionState {
   /** Progress events streamed from the main process during a download */
   progress: DownloadProgressEvent[]
   error: string | null
-  // --- playback state; Phase 4 wires these, the fields live here already ---
+  // --- playback state (Phase 4) ---
+  /** Index into the session's base-timeframe candles — how much of the session
+   *  is "revealed". The chart shows `masterCandleArray.slice(0, currentIndex)`. */
   currentIndex: number
   playing: boolean
+  /** 1..120 — the speed slider; maps to the playback interval delay */
   speed: number
+
+  // --- playback controls (Phase 4) ---
+  /** Play/pause; pressing play after the end restarts from candle 0 */
+  togglePlay: () => void
+  pause: () => void
+  /** Advance one candle WITHOUT changing play state (the loop's per-tick op) */
+  advance: () => void
+  stepForward: () => void
+  stepBackward: () => void
+  skipToStart: () => void
+  skipToEnd: () => void
+  /** Jump to the first candle that opens at or after `timestamp` (Go To) */
+  goToTimestamp: (timestamp: number) => void
+  setSpeed: (speed: number) => void
 
   startSession: (input: NewSessionInput) => Promise<void>
   dismissError: () => void
@@ -54,6 +71,18 @@ export interface SessionState {
 export function sessionBaseCandles(session: ActiveSession | null): Candle[] {
   if (!session) return []
   return session.candlesByTimeframe[session.timeframe] ?? []
+}
+
+/** First index whose candle opens at or after `ts` (binary search, ascending). */
+function indexAtOrAfter(candles: Candle[], ts: number): number {
+  let lo = 0
+  let hi = candles.length
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (candles[mid].timestamp < ts) lo = mid + 1
+    else hi = mid
+  }
+  return lo
 }
 
 export const useSessionStore = create<SessionState>((set) => ({
@@ -67,6 +96,42 @@ export const useSessionStore = create<SessionState>((set) => ({
 
   dismissError: () => set({ error: null, status: 'idle' }),
 
+  // --- playback controls (Phase 4) ---
+  togglePlay: () =>
+    set((s) => {
+      const total = sessionBaseCandles(s.session).length
+      // At the end, play restarts the session from candle 0.
+      if (!s.playing && s.currentIndex >= total) {
+        return { playing: true, currentIndex: 0 }
+      }
+      return { playing: !s.playing }
+    }),
+  pause: () => set({ playing: false }),
+  advance: () =>
+    set((s) => {
+      const total = sessionBaseCandles(s.session).length
+      return { currentIndex: Math.min(s.currentIndex + 1, total) }
+    }),
+  stepForward: () =>
+    set((s) => {
+      const total = sessionBaseCandles(s.session).length
+      return { playing: false, currentIndex: Math.min(s.currentIndex + 1, total) }
+    }),
+  stepBackward: () =>
+    set((s) => ({ playing: false, currentIndex: Math.max(s.currentIndex - 1, 0) })),
+  skipToStart: () => set({ playing: false, currentIndex: 0 }),
+  skipToEnd: () =>
+    set((s) => ({
+      playing: false,
+      currentIndex: sessionBaseCandles(s.session).length
+    })),
+  goToTimestamp: (ts) =>
+    set((s) => ({
+      playing: false,
+      currentIndex: indexAtOrAfter(sessionBaseCandles(s.session), ts)
+    })),
+  setSpeed: (speed) => set({ speed }),
+
   startSession: async (input) => {
     // One batch call downloads every timeframe for the range (cache-first;
     // progress is scaled across timeframes by the main process).
@@ -77,7 +142,14 @@ export const useSessionStore = create<SessionState>((set) => ({
       startDate: input.startDate,
       endDate: input.endDate
     }
-    set({ status: 'downloading', progress: [], error: null, session: null, currentIndex: 0 })
+    set({
+      status: 'downloading',
+      progress: [],
+      error: null,
+      session: null,
+      currentIndex: 0,
+      playing: false
+    })
     try {
       const raw = await window.api.downloadData(request)
       if (!('timeframes' in raw)) {
