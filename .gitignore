@@ -1,1 +1,15 @@
+node_modules
+dist
+out
+.DS_Store
+.eslintcache
+*.log*
+
+# plan.md is the internal blueprint; keep it out of version control
 plan.md
+
+# local SQLite cache
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
