@@ -549,6 +549,104 @@ function createWindow(): void {
         await shot('/tmp/opencode/wanderlust-4-trading.png')
         note('ui3', ui3)
 
+        // ---- 4d. Regression for the reported bug: selecting a position tool
+        // correctly updates the store, but clicking New Order fell back to
+        // manual. Root cause: a plain click on a drawing also opens Vela's
+        // floating drawing-toolbar popup, and ANY subsequent outside press
+        // (e.g. clicking the New Order button — a document-level pointerdown)
+        // dismisses it, which clears the selection — Vela then announces
+        // `drawing:selected` with an EMPTY ids array, and the menu mounts a
+        // beat later already in manual mode. Fix: empty selection events are
+        // chart-UI churn and must not drop the drawing backing New Order.
+        // ui4 replays the user's steps end-to-end and asserts the dismiss
+        // (sawEmpty) no longer clears the pick, then New Order seeds from the
+        // tool, places a market order and closes it with the expected pnl.
+        const ui4 = await js(`(async () => {
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          const q = (s) => document.querySelector(s);
+          const qa = (s) => [...document.querySelectorAll(s)];
+          const text = (s) => q(s)?.textContent?.trim() ?? null;
+          const click = (s) => { const el = q(s); if (!el) return false; el.click(); return true; };
+          const fail = (step, extra = {}) => ({ ok: false, step, ...extra });
+          const near = (a, b) => Math.abs(a - b) < 0.01;
+          const readBalance = () =>
+            Number((text('[data-testid="trading-balance"]') ?? '').replace(/[^0-9.+-]/g, ''));
+          const count = (sel) => {
+            const m = (text(sel) ?? '').match(/\\d+/);
+            return m ? Number(m[0]) : NaN;
+          };
+          const wl = window.__wanderlust;
+          if (!wl) return fail('no-e2e-handle');
+
+          const res = await window.api.getCachedData({
+            symbol: 'eurusd', timeframe: 'm1', startDate: '2026-09-01', endDate: '2026-09-02'
+          });
+          const candles = res.candles ?? [];
+          if (candles.length < 11) return fail('no-candles', { count: candles.length });
+
+          const stepTo = async (n) => {
+            for (let i = 0; i < n * 4 + 10; i++) {
+              if ((q('[data-testid="playback-index"]')?.textContent ?? '').trim() === String(n)) return true;
+              if (!click('[data-testid="playback-step"]')) return false;
+              await sleep(50);
+            }
+            return (q('[data-testid="playback-index"]')?.textContent ?? '').trim() === String(n);
+          };
+
+          const balBefore = readBalance();
+          const cE = candles[9]; // submitted at index 9 → fills candle idx 9
+          const sizeE = (balBefore * 0.01) / (cE.open - cE.low + 0.002);
+          const pnlE = (cE.high - cE.open) * sizeE;
+          const balAfter = balBefore + pnlE;
+
+          if (!(await stepTo(9))) return fail('park', { idx: text('[data-testid="playback-index"]') });
+
+          // The user's flow: place the position tool + click it to select.
+          const id = wl.addPosition({ entry: cE.close, stop: cE.low - 0.002, target: cE.high, time: cE.timestamp });
+          if (!id) return fail('place');
+          wl.chart.drawings.select(id);
+          await sleep(150);
+          if (!text('[data-testid="selected-position"]')) return fail('no-chip');
+
+          // A click on a drawing ALSO opens Vela's floating drawing-toolbar
+          // popup (openSettings is its programmatic twin). Probe for the empty
+          // selection announcement its dismissal causes.
+          wl.chart.drawings.openSettings(id);
+          await sleep(200);
+          let sawEmpty = false;
+          const unsub = wl.chart.on('drawing:selected', (e) => {
+            if (!e.ids || e.ids.length === 0) sawEmpty = true;
+          });
+          document.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+          await sleep(200);
+          unsub();
+
+          if (!text('[data-testid="selected-position"]')) return fail('chip-cleared-by-dismiss', { sawEmpty });
+
+          if (!click('[data-testid="new-order-btn"]')) return fail('open-menu');
+          await sleep(300);
+          const source = text('[data-testid="order-source"]') ?? '';
+          const slDisabled = q('[data-testid="order-sl"]')?.disabled === true;
+          const tpDisabled = q('[data-testid="order-tp"]')?.disabled === true;
+          const entryIsMarket = (q('[data-testid="order-entry"]')?.value ?? '') === 'Market';
+          click('[data-testid="confirm-order"]');
+          await sleep(300);
+          if (q('[data-testid="confirm-order"]')) return fail('menu-stayed-open', { source });
+          if (count('[data-testid="pending-count"]') !== 1) return fail('pending', { c: text('[data-testid="pending-count"]') });
+          if (!(await stepTo(10))) return fail('step');
+          const balActual = readBalance();
+          const closed = count('[data-testid="closed-count"]');
+          return {
+            ok: sawEmpty && closed === 5 && near(balActual, balAfter) && source.includes('From chart tool') && slDisabled && tpDisabled && entryIsMarket,
+            step: 'final',
+            closed, balActual, balAfter, pnlE,
+            source, sawEmpty, slDisabled, tpDisabled, entryIsMarket,
+            candle: cE.timestamp
+          };
+        })()`)
+        await shot('/tmp/opencode/wanderlust-5-selection.png')
+        note('ui4', ui4)
+
         console.log('[e2e] shell      =', JSON.stringify(shellDom))
         console.log('[e2e] download#1 =', JSON.stringify(download1))
         console.log(
@@ -562,10 +660,11 @@ function createWindow(): void {
         console.log('[e2e] ui journey =', JSON.stringify(ui))
         console.log('[e2e] ui2 grace  =', JSON.stringify(ui2))
         console.log('[e2e] ui3 orders =', JSON.stringify(ui3))
+        console.log('[e2e] ui4 select =', JSON.stringify(ui4))
         console.log('[e2e] console   =', JSON.stringify(consoleLogs.slice(-8)))
         console.log('[e2e] console-ui =', JSON.stringify(consoleLogs.slice(logsBefore).slice(0, 6)))
         console.log(
-          '[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading}.png'
+          '[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection}.png'
         )
       } catch (err) {
         console.error('[e2e] FAILED', err)

@@ -112,6 +112,13 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
     }
 
     const onSelected = (e: SelectionPayload): void => {
+      // Vela emits `drawing:selected` with an EMPTY selection on chart-UI churn —
+      // its floating drawing toolbar being dismissed by an outside press (e.g.
+      // clicking our New Order button), a tool being armed/cleared, a marquee
+      // sweep. Those must NOT drop the drawing currently backing the New Order
+      // menu — only a real pick (non-empty ids), a removal (drawing:removed) or
+      // an explicit store clear changes the trading selection.
+      if (e.ids.length === 0) return
       // Prefer the LAST selected position drawing (e.ids is selection order).
       let found: PositionSelection | null = null
       for (const id of e.ids) {

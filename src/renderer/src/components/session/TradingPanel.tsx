@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Plus } from 'lucide-react'
+import { Plus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useSessionStore } from '@/store/session'
 import type { Order } from '@/store/trading'
@@ -94,6 +94,7 @@ export default function TradingPanel(): React.JSX.Element {
   const orders = useSessionStore((s) => s.orders)
   const selectedDrawing = useSessionStore((s) => s.selectedDrawing)
   const lastOrderResult = useSessionStore((s) => s.lastOrderResult)
+  const setSelectedDrawing = useSessionStore((s) => s.setSelectedDrawing)
   const [menuOpen, setMenuOpen] = useState(false)
 
   const pending = orders.filter((o) => o.status === 'pending')
@@ -135,7 +136,7 @@ export default function TradingPanel(): React.JSX.Element {
         {selectedDrawing ? (
           <span
             data-testid="selected-position"
-            className="inline-flex items-baseline gap-1.5 rounded-md border border-sky-500/30 bg-sky-500/10 px-2 py-1 font-mono text-[11px] text-sky-200"
+            className="inline-flex items-center gap-1.5 rounded-md border border-sky-500/30 bg-sky-500/10 px-2 py-1 font-mono text-[11px] text-sky-200"
           >
             <span className="text-[9px] font-sans font-semibold uppercase tracking-wide text-sky-300">
               Selected
@@ -144,6 +145,15 @@ export default function TradingPanel(): React.JSX.Element {
             <span>{fmtPrice(selectedDrawing.entryPrice)}</span>
             <span className="text-sky-400/60">SL {fmtPrice(selectedDrawing.stopLoss)}</span>
             <span className="text-sky-400/60">TP {fmtPrice(selectedDrawing.takeProfit)}</span>
+            <button
+              data-testid="clear-selection"
+              onClick={() => setSelectedDrawing(null)}
+              className="ml-1 rounded p-0.5 text-sky-400/70 transition-colors hover:bg-sky-500/20 hover:text-sky-200"
+              aria-label="Clear selection (New Order falls back to manual)"
+              title="Clear selection"
+            >
+              <X className="size-3" />
+            </button>
           </span>
         ) : (
           <span className="text-[11px] text-zinc-600">No position tool selected</span>
