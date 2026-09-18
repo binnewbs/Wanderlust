@@ -112,7 +112,10 @@ WANDERLUST_SMOKE=1 ./node_modules/electron/dist/electron .
 #      tool, risk templates), step candle-by-candle and assert the fills/exits
 #      (TP-win, SL-loss) moved the balance exactly as re-computed from the
 #      cached candles
-# Writes screenshots to /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading}.png
+#   9. ui4 selection  → regression: a click on a drawing also opens Vela's
+#      floating toolbar; dismissing it (an outside press) must not drop the
+#      drawing — New Order still seeds from the tool and the order closes exact
+# Writes screenshots to /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection}.png
 WANDERLUST_E2E=1 ./node_modules/electron/dist/electron .
 ```
 
