@@ -117,8 +117,12 @@ WANDERLUST_SMOKE=1 ./node_modules/electron/dist/electron .
 #      drawing — New Order still seeds from the tool and the order closes exact
 #  10. ui5 viewport    → regression: stepping playback must not reset the chart
 #      view — the current zoom is preserved and the right edge advances with the
-#      newest candle (no snap to a fixed 120-bar framewindow)
-# Writes screenshots to /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport}.png
+#      newest candle (no snap to a fixed 120-bar frame)
+#  11. ui6 play-view   → regression: wheel-zoom + max-speed playback must keep
+#      the zoomed width (fast pushes overlap setMarket's clearing window, where
+#      the viewport is unreadable — the fix slides the last applied range
+#      instead of framing a fixed 120-bar window on the newest candle)
+# Writes screenshots to /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport,7-playback-view}.png
 WANDERLUST_E2E=1 ./node_modules/electron/dist/electron .
 ```
 

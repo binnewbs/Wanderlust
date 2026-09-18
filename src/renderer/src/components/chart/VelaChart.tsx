@@ -4,7 +4,6 @@ import type { SerializedDrawing, VisibleRange } from '@luxalgo/vela'
 import { useSessionStore } from '@/store/session'
 import type { PositionSelection } from '@/store/trading'
 import {
-  PLAYBACK_WINDOW_BARS,
   SESSION_PROVIDER,
   createSessionDataProvider,
   playbackSlice,
@@ -12,16 +11,14 @@ import {
 } from './sessionProvider'
 import { timeframeMs, velaTimeframe, VELA_TIMEFRAMES } from './vela'
 
-/** Bars kept visible in the playback window (matches the provider's reveal). */
-const WINDOW_BARS = PLAYBACK_WINDOW_BARS
-
 /**
  * React wrapper around `@luxalgo/vela/workspace` (single-chart mode).
  *
  * The workspace is created lazily per session and addresses the chart with the
  * `wanderlust` provider. Since Phase 4 the chart is REPLAY-driven: it only ever
- * shows the candles revealed up to the store's `currentIndex`, and the view
- * slides a fixed bar window with the latest revealed bar.
+ * shows the candles revealed up to the store's `currentIndex`. The view keeps
+ * the user's zoom/pan: pinned to the newest revealed bar it slides along at the
+ * same width; panned away it stays put.
  *
  * Slicing is pushed imperatively so the playback loop never re-renders React:
  * - a store `currentIndex` change → `chart.setMarket({ data: slice })`
@@ -157,6 +154,12 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
     // Time of the newest revealed bar on the LAST push — lets the next push
     // know how far the tape advanced and whether the view is pinned to it.
     let lastPushLastTime: number | null = null
+    // The range WE last applied — the stand-in viewport while the chart is
+    // mid-reload, because `setMarket`'s full switch clears the bars first and
+    // `getVisibleRange()` returns null for a barCount of 0. Sliding the last
+    // known range (instead of the renderer's live view) keeps the zoom steady
+    // even when pushes overlap the load — under fast playback they do.
+    let lastRange: { from: number; to: number } | null = null
     const pushSlice = (): void => {
       const st = useSessionStore.getState()
       const session = st.session
@@ -176,27 +179,31 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
       // the least surprising range for the new data ourselves:
       //   - index 0 (initial reveal): frame ALL of the run-up context, so the
       //     full 24h of pre-session candles are visible on load.
-      //   - otherwise: read the CURRENT view and keep it. Pinned to the newest
-      //     revealed bar → slide it along by the reveal delta at the SAME zoom
-      //     (the tape plays in place: newest candle stays at the right edge,
-      //     width untouched). Panned/zoomed away → leave the user's range
-      //     exactly as set — nothing behind moves, fresh bars belong off-view.
+      //   - otherwise: keep the CURRENT view. Pinned to the newest revealed
+      //     bar → slide it along by the reveal delta at the SAME zoom (the tape
+      //     plays in place: newest candle stays at the right edge, width
+      //     untouched). Panned/zoomed away → leave the range exactly as the
+      //     user set it — nothing behind moves, fresh bars belong off-view.
+      // If the viewport is unreadable (mid-switch clear), reuse the last
+      // applied range slid forward — never a hard 120-bar frame, which is what
+      // snapped the playback zoomed-in on the newest candle.
       let visibleRange: VisibleRange | undefined
       if (last === undefined) {
         visibleRange = undefined
       } else if (st.currentIndex === 0 || lastPushLastTime === null) {
         visibleRange = { from: first, to: last + barMs }
       } else {
-        const cur = chart.getVisibleRange()
         const prevLast = lastPushLastTime
-        if (cur && cur.to >= prevLast - barMs) {
+        const base = chart.getVisibleRange() ?? lastRange
+        if (base && base.to >= prevLast - barMs) {
           const delta = last - prevLast
-          visibleRange = { from: cur.from + delta, to: cur.to + delta }
+          visibleRange = { from: base.from + delta, to: base.to + delta }
         } else {
-          visibleRange = cur ?? { from: last - barMs * WINDOW_BARS, to: last + barMs }
+          visibleRange = base ?? undefined
         }
       }
       lastPushLastTime = last ?? lastPushLastTime
+      if (visibleRange) lastRange = { from: visibleRange.from, to: visibleRange.to }
       void chart.setMarket({
         symbol: sessionTicker(session.asset.id),
         timeframe: activeTf,

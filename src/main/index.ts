@@ -698,6 +698,99 @@ function createWindow(): void {
         await shot('/tmp/opencode/wanderlust-6-viewport.png')
         note('ui5', ui5)
 
+        // ---- 4f. Regression for "playback zooms in on the newest candle":
+        // `setMarket({ data })` is a full reload that CLEARS the bars first, so
+        // during the load `getVisibleRange()` returns null. Under fast playback
+        // pushes overlap that window, and the old fallback re-framed a fixed
+        // 120-bar window → the view snapped zoomed-in on the latest candle no
+        // matter what the user zoomed to. Fix: on an unreadable viewport, slide
+        // the LAST applied range instead of framing anything new. ui6 zooms in
+        // with a wheel gesture, then plays at max-speed cadence and asserts the
+        // zoomed width survives (no snap back to the wide view, no 120-bar).
+        const ui6 = await js(`(async () => {
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          const q = (s) => document.querySelector(s);
+          const text = (s) => q(s)?.textContent?.trim() ?? null;
+          const click = (s) => { const el = q(s); if (!el) return false; el.click(); return true; };
+          const fail = (step, extra = {}) => ({ ok: false, step, ...extra });
+          const wl = window.__wanderlust;
+          if (!wl) return fail('no-e2e-handle');
+          const barMs = 60000;
+          const stepTo = async (n) => {
+            for (let i = 0; i < n * 4 + 10; i++) {
+              if ((q('[data-testid="playback-index"]')?.textContent ?? '').trim() === String(n)) return true;
+              if (!click('[data-testid="playback-step"]')) return false;
+              await sleep(50);
+            }
+            return (q('[data-testid="playback-index"]')?.textContent ?? '').trim() === String(n);
+          };
+          const readWidth = () => {
+            const v = wl.chart.getVisibleRange();
+            return v ? { from: v.from, to: v.to, w: v.to - v.from } : null;
+          };
+          const wheelZoom = async (deltaY, count, gapMs) => {
+            const canvas = [...document.querySelectorAll('canvas')]
+              .map((c) => c.getBoundingClientRect())
+              .sort((a, b) => b.width * b.height - a.width * a.height)[0];
+            if (!canvas || canvas.width === 0) return false;
+            const target = document.elementFromPoint(canvas.left + canvas.width / 2, canvas.top + canvas.height / 2);
+            const el = target ?? document.querySelector('canvas');
+            for (let i = 0; i < count; i++) {
+              el.dispatchEvent(new WheelEvent('wheel', {
+                deltaY, clientX: canvas.left + canvas.width * 0.6, clientY: canvas.top + canvas.height * 0.5,
+                bubbles: true, cancelable: true
+              }));
+              await sleep(gapMs);
+            }
+            return true;
+          };
+          if (!(await stepTo(12))) return fail('park');
+          await sleep(250);
+          const v1 = readWidth();
+          if (!v1) return fail('no-view-1');
+          // User gesture: wheel-zoom IN (deltaY < 0), right edge stays anchored.
+          if (!(await wheelZoom(-160, 3, 60))) return fail('wheel');
+          await sleep(200);
+          const vZoom = readWidth();
+          if (!vZoom) return fail('no-view-zoom');
+          const zoomedIn = vZoom.w < v1.w * 0.7;
+          // Max-speed playback cadence: 50ms ticks for 10 candles.
+          const samples = [];
+          for (let i = 0; i < 10; i++) {
+            if (!click('[data-testid="playback-step"]')) return fail('step');
+            await sleep(50);
+            const v = readWidth();
+            if (v) samples.push(v.w);
+          }
+          await sleep(250);
+          const vFin = readWidth();
+          if (!vFin) return fail('no-view-fin');
+          const drift = samples.length ? Math.max(...samples.map((w) => Math.abs(w - vZoom.w))) : Infinity;
+          const snappedWide = Math.abs(vFin.w - v1.w) < barMs * 3;
+          const snapped120 = Math.abs(vFin.w - 120 * barMs) < barMs * 12;
+          const ok = zoomedIn && drift <= 3 * barMs && !snappedWide && !snapped120;
+
+          // Tight synchronous burst: pushSlices stack in ONE task. Each new push
+          // sees the bars already CLEARED by the previous push's setMarket (the
+          // load only finishes in the microtask drain), so chart.getVisibleRange()
+          // returns null - the old fallback then framed a fixed 120-bar window
+          // around the newest candle ("playback zooms in on the latest candle").
+          for (let i = 0; i < 8; i++) click('[data-testid="playback-step"]')
+          await sleep(200);
+          const vBurst = readWidth();
+          if (!vBurst) return fail('no-view-burst');
+          const burstSnapped120 = Math.abs(vBurst.w - 120 * barMs) < barMs * 12;
+          const burstWidthKept = Math.abs(vBurst.w - vZoom.w) <= 3 * barMs;
+          return {
+            ok: ok && burstWidthKept && !burstSnapped120, step: 'final',
+            w1: v1.w, wZoom: vZoom.w, wFin: vFin.w, wBurst: vBurst.w,
+            to1: v1.to, toFin: vFin.to, drift,
+            snappedWide, snapped120, burstSnapped120, burstWidthKept, zoomedIn
+          };
+        })()`)
+        await shot('/tmp/opencode/wanderlust-7-playback-view.png')
+        note('ui6', ui6)
+
         console.log('[e2e] shell      =', JSON.stringify(shellDom))
         console.log('[e2e] download#1 =', JSON.stringify(download1))
         console.log(
@@ -713,10 +806,11 @@ function createWindow(): void {
         console.log('[e2e] ui3 orders =', JSON.stringify(ui3))
         console.log('[e2e] ui4 select =', JSON.stringify(ui4))
         console.log('[e2e] ui5 viewpt =', JSON.stringify(ui5))
+        console.log('[e2e] ui6 playv  =', JSON.stringify(ui6))
         console.log('[e2e] console   =', JSON.stringify(consoleLogs.slice(-8)))
         console.log('[e2e] console-ui =', JSON.stringify(consoleLogs.slice(logsBefore).slice(0, 6)))
         console.log(
-          '[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport}.png'
+          '[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport,7-playback-view}.png'
         )
       } catch (err) {
         console.error('[e2e] FAILED', err)
