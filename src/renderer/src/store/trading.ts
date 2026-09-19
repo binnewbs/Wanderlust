@@ -37,6 +37,9 @@ export interface Order {
   takeProfit: number
   /** % of the account balance risked at fill. */
   riskPercent: number
+  /** Estimated units at submission, used solely for pending-order PnL previews.
+   * Actual `size` is still calculated from balance when the order fills. */
+  previewSize?: number
   /** Session index at submission — candles at/before it can never fill this. */
   submissionIndex: number
   status: OrderStatus

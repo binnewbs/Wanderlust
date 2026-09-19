@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { VelaWorkspace, type VelaWorkspaceOptions } from '@luxalgo/vela/workspace'
 import type { SerializedDrawing, VisibleRange } from '@luxalgo/vela'
+import type { Timeframe } from '@shared/timeframes'
 import { useSessionStore } from '@/store/session'
 import type { PositionSelection } from '@/store/trading'
 import {
@@ -9,7 +10,7 @@ import {
   playbackSlice,
   sessionTicker
 } from './sessionProvider'
-import { timeframeMs, velaTimeframe, VELA_TIMEFRAMES } from './vela'
+import { dukascopyTimeframe, timeframeMs, velaTimeframe, VELA_TIMEFRAMES } from './vela'
 import { rendererOf, velaChartRef, type PriceRange, type ScaleHolderBridge } from './chartBridge'
 import OrderLevelsOverlay from './OrderLevelsOverlay'
 
@@ -292,9 +293,17 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
     // Also the moment the new data has painted — restore the manual price
     // frames the reload wiped.
     const unsubMarket = chart.on('market:changed', () => {
+      // Step buttons must follow the timeframe the user is actually viewing:
+      // one press on H1 reveals one H1 bar, not one hidden M1 bar.
+      useSessionStore
+        .getState()
+        .setPlaybackTimeframe(dukascopyTimeframe(chart.market.timeframe ?? velaTimeframe(timeframe)) as Timeframe)
       restoreManualScales(chart, pendingPriceScales)
       pushSlice()
     })
+    useSessionStore
+      .getState()
+      .setPlaybackTimeframe(dukascopyTimeframe(chart.market.timeframe ?? velaTimeframe(timeframe)) as Timeframe)
     // Frame the initial reveal (index 0 → blank replay surface).
     pushSlice()
 

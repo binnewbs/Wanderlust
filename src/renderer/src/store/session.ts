@@ -11,6 +11,7 @@ import {
 import {
   evaluateOrders,
   nextOrderId,
+  sizeForRisk,
   type NewOrderInput,
   type Order,
   type OrderLevel,
@@ -63,6 +64,8 @@ export interface SessionState {
   /** Index into the session's base-timeframe candles — how much of the session
    *  is "revealed". The chart shows `masterCandleArray.slice(0, currentIndex)`. */
   currentIndex: number
+  /** Timeframe currently displayed by the chart; stepping follows this bar cadence. */
+  playbackTimeframe: Timeframe
   playing: boolean
   /** 1..120 — the speed slider; maps to the playback interval delay */
   speed: number
@@ -75,6 +78,7 @@ export interface SessionState {
   advance: () => void
   stepForward: () => void
   stepBackward: () => void
+  setPlaybackTimeframe: (timeframe: Timeframe) => void
   skipToStart: () => void
   skipToEnd: () => void
   /** Jump to the first candle that opens at or after `timestamp` (Go To) */
@@ -98,7 +102,7 @@ export interface SessionState {
   /** Live-drag a pending/filled order's SL or TP level (OrderLevelsOverlay).
    *  Closed orders are read-only; the write is a pure guarded map. */
   updateOrderLevel: (orderId: string, level: OrderLevel, price: number) => void
-  /** Close a filled position at the latest revealed candle close. */
+  /** Cancel a pending order, or close a filled position at the latest market close. */
   closeOrder: (orderId: string) => void
   setRiskPercent: (pct: number) => void
   /** The chart pushes the currently selected position drawing here (or null). */
@@ -167,12 +171,31 @@ function indexAtOrAfter(candles: Candle[], ts: number): number {
   return lo
 }
 
+/** Reveal index that adds/removes exactly one bar on the currently viewed timeframe. */
+function stepIndexForTimeframe(session: ActiveSession | null, currentIndex: number, tf: Timeframe, dir: 1 | -1): number {
+  if (!session) return 0
+  const base = sessionBaseCandles(session)
+  const active = session.candlesByTimeframe[tf] ?? base
+  const runUp = sessionBaseRunUp(session)
+  const cutoff = currentIndex > 0 ? base[currentIndex - 1]?.timestamp : runUp[runUp.length - 1]?.timestamp
+  if (cutoff === undefined) return dir > 0 ? Math.min(1, base.length) : 0
+  let visible = 0
+  while (visible < active.length && active[visible].timestamp <= cutoff) visible += 1
+  if (dir > 0) {
+    const next = active[visible]
+    return next ? Math.min(base.length, indexAtOrAfter(base, next.timestamp) + 1) : base.length
+  }
+  const current = active[visible - 1]
+  return current ? indexAtOrAfter(base, current.timestamp) : 0
+}
+
 export const useSessionStore = create<SessionState>((set, get) => ({
   status: 'idle',
   session: null,
   progress: [],
   error: null,
   currentIndex: 0,
+  playbackTimeframe: 'm1',
   playing: false,
   speed: 30,
   balance: 0,
@@ -214,7 +237,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   stepForward: () =>
     set((s) => {
       const total = sessionBaseCandles(s.session).length
-      const nextIndex = Math.min(s.currentIndex + 1, total)
+      const nextIndex = Math.min(
+        stepIndexForTimeframe(s.session, s.currentIndex, s.playbackTimeframe, 1),
+        total
+      )
       const ev = evaluateOrders(
         s.orders,
         s.balance,
@@ -225,7 +251,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return { playing: false, currentIndex: nextIndex, orders: ev.orders, balance: ev.balance }
     }),
   stepBackward: () =>
-    set((s) => ({ playing: false, currentIndex: Math.max(s.currentIndex - 1, 0) })),
+    set((s) => ({
+      playing: false,
+      currentIndex: stepIndexForTimeframe(s.session, s.currentIndex, s.playbackTimeframe, -1)
+    })),
+  setPlaybackTimeframe: (playbackTimeframe) => set({ playbackTimeframe }),
   skipToStart: () => set({ playing: false, currentIndex: 0 }),
   skipToEnd: () =>
     set((s) => {
@@ -314,16 +344,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return
       }
     }
+    // A market order does not execute at the position tool's projected entry:
+    // it fills on the next candle. Until that fill arrives, anchor its pending
+    // entry display/risk preview to the latest known market close instead.
+    const base = sessionBaseCandles(s.session)
+    const runUp = sessionBaseRunUp(s.session)
+    const latestClose =
+      s.currentIndex > 0
+        ? base[s.currentIndex - 1]?.close
+        : runUp.length > 0
+          ? runUp[runUp.length - 1]?.close
+          : undefined
+    const orderPrice =
+      input.orderType === 'market' && latestClose !== undefined && Number.isFinite(latestClose)
+        ? latestClose
+        : input.orderPrice
     const order: Order = {
       id: nextOrderId(),
       drawingId: input.drawingId,
       symbol: s.session.asset.id,
       orderType: input.orderType,
       direction: input.direction,
-      orderPrice: input.orderPrice,
+      orderPrice,
       stopLoss: input.stopLoss,
       takeProfit: input.takeProfit,
       riskPercent: input.riskPercent,
+      previewSize: sizeForRisk(orderPrice, input.stopLoss, input.riskPercent, s.balance),
       submissionIndex: s.currentIndex,
       status: 'pending'
     }
@@ -353,6 +399,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   closeOrder: (orderId) =>
     set((s) => {
+      const order = s.orders.find((candidate) => candidate.id === orderId)
+      if (!order || order.status === 'closed') return s
+      // A pending order has never entered the market: remove it rather than
+      // creating a zero-PnL closed trade or changing the account balance.
+      if (order.status === 'pending') {
+        return {
+          orders: s.orders.filter((candidate) => candidate.id !== orderId),
+          lastOrderResult: { ok: true, message: 'Pending order cancelled.' }
+        }
+      }
       const base = sessionBaseCandles(s.session)
       const runUp = sessionBaseRunUp(s.session)
       const candle =
@@ -362,10 +418,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             ? runUp[runUp.length - 1]
             : undefined
       const exitPrice = candle?.close
-      if (!Number.isFinite(exitPrice) || exitPrice <= 0) return s
-      const order = s.orders.find((candidate) => candidate.id === orderId)
-      if (!order || order.status !== 'filled' || !Number.isFinite(order.fillPrice)) return s
-      const pnl = (exitPrice - order.fillPrice) * (order.size ?? 0) * (order.direction === 'long' ? 1 : -1)
+      if (exitPrice === undefined || !Number.isFinite(exitPrice) || exitPrice <= 0 || !candle) return s
+      const fillPrice = order?.fillPrice
+      if (!order || order.status !== 'filled' || fillPrice === undefined || !Number.isFinite(fillPrice)) return s
+      const pnl = (exitPrice - fillPrice) * (order.size ?? 0) * (order.direction === 'long' ? 1 : -1)
       return {
         orders: s.orders.map((candidate) =>
           candidate.id === orderId
@@ -407,6 +463,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       error: null,
       session: null,
       currentIndex: 0,
+      playbackTimeframe: input.timeframe,
       playing: false,
       balance: input.balance,
       orders: [],

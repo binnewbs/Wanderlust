@@ -81,10 +81,14 @@ function formatMoney(amount: number): string {
   })}`
 }
 
-function pnlAt(order: Order, price: number): number {
-  const entry = order.fillPrice
-  if (!Number.isFinite(entry) || !Number.isFinite(order.size) || !Number.isFinite(price)) return 0
-  return (price - entry) * order.size * (order.direction === 'long' ? 1 : -1)
+function pnlAt(order: Order, entry: number, size: number, price: number): number {
+  if (
+    !Number.isFinite(entry) ||
+    !Number.isFinite(size) ||
+    !Number.isFinite(price)
+  )
+    return 0
+  return (price - entry) * size * (order.direction === 'long' ? 1 : -1)
 }
 
 const STRIP_STYLES: Record<LevelKind, { line: string; label: string }> = {
@@ -122,19 +126,35 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
     const base = sessionBaseCandles(session)
     const runUp = sessionBaseRunUp(session)
     const livePrice =
-      currentIndex > 0 ? base[currentIndex - 1]?.close : runUp.length > 0 ? runUp[runUp.length - 1]?.close : undefined
+      currentIndex > 0
+        ? base[currentIndex - 1]?.close
+        : runUp.length > 0
+          ? runUp[runUp.length - 1]?.close
+          : undefined
     const pushLevel = (o: Order, level: LevelKind, price: number): void => {
       if (!Number.isFinite(price) || price <= 0) return
       const active = o.status === 'filled' && o.fillPrice !== undefined
-      const pnlPrice = level === 'entry' ? livePrice : price
-      const money = active && Number.isFinite(pnlPrice) ? formatMoney(pnlAt(o, pnlPrice)) : undefined
+      // Pending orders have no filled size yet. Keep the size preview captured
+      // when submitted: dragging SL/TP must immediately change the displayed
+      // potential PnL instead of silently resizing the hypothetical position.
+      const entry = o.fillPrice ?? o.orderPrice
+      const size = o.size ?? o.previewSize ?? 0
+      // A pending order is not a position yet. Its entry PnL must start at
+      // exactly zero—limit/stop orders must not look filled just because the
+      // market is currently away from their trigger. TP and SL still show the
+      // estimated outcome from the configured entry and risk-sized quantity.
+      const pnlPrice = level === 'entry' ? (active ? livePrice : entry) : price
+      const money =
+        pnlPrice !== undefined && Number.isFinite(pnlPrice)
+          ? `${active ? '' : '~'}${formatMoney(pnlAt(o, entry, size, pnlPrice))}`
+          : undefined
       out.push({
         key: `${o.id}:${level}`,
         orderId: o.id,
         level,
         price,
         money,
-        closeable: active && level === 'entry'
+        closeable: level === 'entry'
       })
     }
     for (const o of orders) {
@@ -495,18 +515,21 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
               className={`pointer-events-none absolute left-0 right-0 ${s.line}`}
               style={{ top: STRIP_HALF - 0.5, height: 1 }}
             />
-            {/* Level / PnL badge. Filled entries include an explicit close control. */}
+            {/* Entry badges include an explicit pending-cancel / active-close control. */}
             <div
               className={`absolute flex items-center overflow-hidden rounded-sm ${s.label}`}
               style={{
-                top: 2,
-                right: 4,
-                height: 9,
-                lineHeight: '9px',
-                fontSize: 9
+                // Bring the badge into the plot a little, away from the price
+                // axis, and give the PnL enough room to scan at a glance.
+                top: -1,
+                right: 28,
+                minWidth: 94,
+                height: 16,
+                lineHeight: '16px',
+                fontSize: 11
               }}
             >
-              <span className="pointer-events-none px-[5px]">
+              <span className="pointer-events-none flex-1 px-2 text-center font-medium">
                 {spec.level === 'entry' ? 'E' : spec.level === 'stopLoss' ? 'SL' : 'TP'}
                 {spec.money ? ` ${spec.money}` : ''}
               </span>
@@ -514,9 +537,9 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
                 <button
                   type="button"
                   data-testid="close-position-line"
-                  aria-label="Close position at current market price"
-                  title="Close position"
-                  className="flex h-[9px] w-[12px] items-center justify-center border-l border-white/30 text-[10px] leading-none transition-colors hover:bg-white/20"
+                  aria-label="Cancel pending order or close active position"
+                  title="Cancel pending order / close active position"
+                  className="flex h-4 w-5 items-center justify-center border-l border-white/30 text-sm leading-none transition-colors hover:bg-white/20"
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation()
