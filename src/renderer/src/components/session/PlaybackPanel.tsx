@@ -25,6 +25,78 @@ function formatUtc(ms: number | undefined): string {
   return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())} UTC`
 }
 
+type JumpTarget = 'next_day' | 'new_york' | 'asia' | 'london'
+
+const JUMP_TARGETS: Array<{ value: JumpTarget; label: string }> = [
+  { value: 'next_day', label: 'Next Day Open' },
+  { value: 'new_york', label: 'New York Open · 09:29 ET' },
+  { value: 'asia', label: 'Asian Open · 07:00 UTC+7' },
+  { value: 'london', label: 'London Open · 02:59 ET' }
+]
+
+interface DateParts {
+  year: number
+  month: number
+  day: number
+  hour: number
+  minute: number
+}
+
+function partsInZone(timestamp: number, timeZone: string): DateParts {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    hourCycle: 'h23'
+  }).formatToParts(new Date(timestamp))
+  const value = (type: Intl.DateTimeFormatPartTypes): number =>
+    Number(parts.find((part) => part.type === type)?.value ?? 0)
+  return { year: value('year'), month: value('month'), day: value('day'), hour: value('hour'), minute: value('minute') }
+}
+
+/** Convert a wall-clock date in an IANA zone to UTC, including historical DST. */
+function zonedWallTimeUtc(date: DateParts, timeZone: string, hour: number, minute: number): number {
+  const desired = Date.UTC(date.year, date.month - 1, date.day, hour, minute)
+  let candidate = desired
+  // Two passes resolve the zone offset; a third is harmless around DST edges.
+  for (let i = 0; i < 3; i += 1) {
+    const actual = partsInZone(candidate, timeZone)
+    candidate += desired - Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute)
+  }
+  return candidate
+}
+
+function nextSessionTimestamp(after: number, target: JumpTarget): number {
+  if (target === 'next_day') {
+    const d = new Date(after)
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1)
+  }
+  if (target === 'asia') {
+    // 07:00 in UTC+7 is a fixed 00:00 UTC: no seasonal timezone adjustment.
+    const d = new Date(after)
+    let candidate = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+    if (candidate <= after) candidate += 86_400_000
+    return candidate
+  }
+  const zone = 'America/New_York'
+  const local = partsInZone(after, zone)
+  const [hour, minute] = target === 'new_york' ? [9, 29] : [2, 59]
+  let candidate = zonedWallTimeUtc(local, zone, hour, minute)
+  if (candidate <= after) {
+    const tomorrow = new Date(Date.UTC(local.year, local.month - 1, local.day + 1))
+    candidate = zonedWallTimeUtc(
+      { year: tomorrow.getUTCFullYear(), month: tomorrow.getUTCMonth() + 1, day: tomorrow.getUTCDate(), hour: 0, minute: 0 },
+      zone,
+      hour,
+      minute
+    )
+  }
+  return candidate
+}
+
 export default function PlaybackPanel(): React.JSX.Element {
   const session = useSessionStore((s) => s.session)
   const currentIndex = useSessionStore((s) => s.currentIndex)
@@ -47,6 +119,7 @@ export default function PlaybackPanel(): React.JSX.Element {
   const setSpeed = useSessionStore((s) => s.setSpeed)
 
   const [gotoDate, setGotoDate] = useState('')
+  const [jumpTarget, setJumpTarget] = useState<JumpTarget>('next_day')
 
   // Playback loop: advance one candle per tick while playing. The interval is
   // re-armed only when play state or speed changes.
@@ -68,6 +141,10 @@ export default function PlaybackPanel(): React.JSX.Element {
     const [y, m, d] = gotoDate.split('-').map(Number)
     if (!y || !m || !d) return
     goToTimestamp(Date.UTC(y, m - 1, d))
+  }
+  const goToSession = (): void => {
+    if (currentTime === undefined) return
+    goToTimestamp(nextSessionTimestamp(currentTime, jumpTarget))
   }
 
   const enabled = session !== null
@@ -158,6 +235,33 @@ export default function PlaybackPanel(): React.JSX.Element {
             data-testid="playback-goto-btn"
           >
             Go
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <label className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+            Go to
+          </label>
+          <select
+            data-testid="playback-session-target"
+            value={jumpTarget}
+            disabled={!enabled}
+            onChange={(e) => setJumpTarget(e.target.value as JumpTarget)}
+            className="max-w-48 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-300 outline-none"
+          >
+            {JUMP_TARGETS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <button
+            className="rounded-md border border-sky-700/70 bg-sky-500/10 px-2 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20 disabled:opacity-40"
+            disabled={!enabled || currentTime === undefined}
+            onClick={goToSession}
+            data-testid="playback-session-goto-btn"
+          >
+            Go To
           </button>
         </div>
 

@@ -3,6 +3,7 @@ import { X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { sessionBaseCandles, sessionBaseRunUp, useSessionStore } from '@/store/session'
 import { sizeForRisk, type OrderType, type TradeDirection } from '@/store/trading'
+import { positionAnchorsOf, velaChartRef } from '@/components/chart/chartBridge'
 
 /**
  * New Order menu (Phase 5) — the bridge between Vela's Long/Short Position
@@ -100,13 +101,25 @@ export default function NewOrderMenu({ onClose }: NewOrderMenuProps): React.JSX.
 
   const handleSubmit = (): void => {
     setError(null)
+    // Snapshot the live drawing at the confirmation click. This is a final
+    // guard against an event/render boundary after the user has just dragged a
+    // position-tool handle, so the submitted order always gets its last
+    // on-chart entry/SL/TP values.
+    const live = selectedDrawing
+      ? positionAnchorsOf(velaChartRef.current, selectedDrawing.drawingId)
+      : null
+    const submitEntry = live?.entry ?? entry
+    const submitStop = live?.stop ?? sl
+    const submitTarget = live?.target ?? tp
+    const submitDirection: TradeDirection =
+      live ? (live.target >= live.entry ? 'long' : 'short') : direction
     submitOrder({
       drawingId: selectedDrawing?.drawingId,
       orderType,
-      direction,
-      orderPrice: entry,
-      stopLoss: sl,
-      takeProfit: tp,
+      direction: submitDirection,
+      orderPrice: submitEntry,
+      stopLoss: submitStop,
+      takeProfit: submitTarget,
       riskPercent: risk
     })
     const result = useSessionStore.getState().lastOrderResult

@@ -443,7 +443,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   setSelectedDrawing: (selection) =>
     set((s) => {
-      if (selection?.drawingId === s.selectedDrawing?.drawingId) return s
+      // The same drawing id can carry new anchors after the user drags the
+      // position tool. Keep the selection snapshot fresh so New Order seeds
+      // from its adjusted entry/SL/TP, not the values from the first click.
+      const previous = s.selectedDrawing
+      if (
+        selection?.drawingId === previous?.drawingId &&
+        selection?.direction === previous?.direction &&
+        selection?.entryPrice === previous?.entryPrice &&
+        selection?.stopLoss === previous?.stopLoss &&
+        selection?.takeProfit === previous?.takeProfit
+      )
+        return s
       return { selectedDrawing: selection }
     }),
 
