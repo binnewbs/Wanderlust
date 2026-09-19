@@ -34,6 +34,7 @@ import {
 export type SessionStatus = 'idle' | 'downloading' | 'ready' | 'error'
 
 export interface NewSessionInput {
+  name?: string
   asset: Asset
   /** Dukascopy timeframe id ('m1' | 'm5' | 'm15' | 'm30' | 'h1' | 'h4' | 'd1')
    *  — the chart's INITIAL timeframe; every timeframe is downloaded regardless. */
@@ -46,7 +47,25 @@ export interface NewSessionInput {
   balance: number
 }
 
+export interface SavedSession {
+  id: string
+  name: string
+  asset: Asset
+  timeframe: Timeframe
+  startDate: string
+  endDate: string
+  startBalance: number
+  balance: number
+  orders: Order[]
+  currentIndex: number
+  playbackTimeframe: Timeframe
+  createdAt: number
+  updatedAt: number
+}
+
 export interface ActiveSession extends NewSessionInput {
+  id: string
+  name: string
   /** Candles for every downloaded timeframe, keyed by dukascopy timeframe id. */
   candlesByTimeframe: Partial<Record<Timeframe, Candle[]>>
   /** Candles of the day(s) downloaded as run-up context, keyed by dukascopy
@@ -124,6 +143,13 @@ export interface SessionState {
 
   startSession: (input: NewSessionInput) => Promise<void>
   dismissError: () => void
+
+  // --- saved sessions management ---
+  savedSessions: SavedSession[]
+  exitToMainMenu: () => void
+  resumeSavedSession: (id: string) => Promise<void>
+  deleteSavedSession: (id: string) => void
+  saveCurrentSessionState: () => void
 }
 
 /** Candles of the session's initial timeframe — the playback panel's counter. */
@@ -209,6 +235,130 @@ export function stepIndexForTimeframe(
   return current ? indexAtOrAfter(base, current.timestamp) : 0
 }
 
+const SESSIONS_STORAGE_KEY = 'wanderlust_saved_sessions'
+
+function loadSavedSessionsFromStorage(): SavedSession[] {
+  if (typeof window === 'undefined' || !window.localStorage) return []
+  try {
+    const raw = window.localStorage.getItem(SESSIONS_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function persistSavedSessionsToStorage(sessions: SavedSession[]): void {
+  if (typeof window === 'undefined' || !window.localStorage) return
+  try {
+    window.localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(sessions))
+  } catch {
+    // ignore
+  }
+}
+
+async function loadCandlesAndRunUp(
+  asset: Asset,
+  initialTimeframe: Timeframe,
+  startDate: string,
+  endDate: string
+): Promise<{
+  candlesByTimeframe: Partial<Record<Timeframe, Candle[]>>
+  runUpByTimeframe: Partial<Record<Timeframe, Candle[]>>
+  sources: Partial<Record<Timeframe, string>>
+}> {
+  const request = {
+    symbol: asset.id,
+    timeframe: initialTimeframe,
+    timeframes: [...TIMEFRAMES],
+    startDate,
+    endDate
+  }
+  const raw = await window.api.downloadData(request)
+  if (!('timeframes' in raw)) {
+    throw new Error(raw.message ?? 'Download failed.')
+  }
+  const res = raw as DownloadBatchResult
+  if (!res.ok) {
+    throw new Error(res.message ?? 'Download failed.')
+  }
+
+  const candlesByTimeframe: Partial<Record<Timeframe, Candle[]>> = {}
+  for (const tf of TIMEFRAMES) {
+    const data = await window.api.getCachedData({
+      symbol: asset.id,
+      timeframe: tf,
+      startDate,
+      endDate
+    })
+    if (data.ok && data.candles.length > 0) candlesByTimeframe[tf] = data.candles
+  }
+  if (Object.values(candlesByTimeframe).every((c) => !c?.length)) {
+    throw new Error(
+      'Dukascopy returned no candles for that range (weekends and holidays have no data). Try a different asset or date range.'
+    )
+  }
+
+  const sources: Partial<Record<Timeframe, string>> = {}
+  for (const tfRes of res.timeframes) {
+    sources[tfRes.timeframe as Timeframe] = tfRes.source
+  }
+
+  const runUpByTimeframe: Partial<Record<Timeframe, Candle[]>> = {}
+  const runUpEnd = isoAddDays(startDate, -1)
+  const windowCandles: Partial<Record<Timeframe, Candle[]>> = {}
+  const runUpMs = (tf: Timeframe): number => (windowCandles[tf]?.length ?? 0) * timeframeMs(tf)
+  const usedNetwork = res.timeframes.some((tfRes) => tfRes.source !== 'cache')
+  const runUpBudgetMs = usedNetwork ? RUNUP_NETWORK_BUDGET_MS : RUNUP_CACHEONLY_BUDGET_MS
+  const runUpStartedAt = Date.now()
+  for (let back = 1; back <= SESSION_RUNUP_LOOKBACK_DAYS; back++) {
+    if (runUpMs(initialTimeframe) >= RUNUP_TARGET_MS) break
+    const remaining = runUpBudgetMs - (Date.now() - runUpStartedAt)
+    if (remaining <= 0) break
+    const day = isoAddDays(runUpEnd, -(back - 1))
+    const dayFetch = window.api.downloadData({
+      symbol: asset.id,
+      timeframe: initialTimeframe,
+      timeframes: [...TIMEFRAMES],
+      startDate: day,
+      endDate: day
+    })
+    const settled = await Promise.race([
+      dayFetch.then(
+        () => true,
+        () => false
+      ),
+      sleep(remaining).then(() => false)
+    ])
+    void dayFetch.then(
+      () => undefined,
+      () => undefined
+    )
+    if (!settled) break
+    for (const tf of Object.keys(candlesByTimeframe) as Timeframe[]) {
+      const data = await window.api.getCachedData({
+        symbol: asset.id,
+        timeframe: tf,
+        startDate: day,
+        endDate: day
+      })
+      if (!data.ok || data.candles.length === 0) continue
+      const prev = windowCandles[tf]
+      windowCandles[tf] = prev ? data.candles.concat(prev) : data.candles
+    }
+  }
+
+  for (const tf of Object.keys(candlesByTimeframe) as Timeframe[]) {
+    const win = windowCandles[tf]
+    if (!win || win.length === 0) continue
+    const runUp = runUpTail(win, timeframeMs(tf))
+    if (runUp.length > 0) runUpByTimeframe[tf] = runUp
+  }
+
+  return { candlesByTimeframe, runUpByTimeframe, sources }
+}
+
 export const useSessionStore = create<SessionState>((set, get) => ({
   status: 'idle',
   session: null,
@@ -225,6 +375,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   rewindWarningDismissed: false,
   selectedDrawing: null,
   lastOrderResult: null,
+  savedSessions: loadSavedSessionsFromStorage(),
 
   dismissError: () => set({ error: null, status: 'idle' }),
 
@@ -592,15 +743,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }),
 
   startSession: async (input) => {
-    // One batch call downloads every timeframe for the range (cache-first;
-    // progress is scaled across timeframes by the main process).
-    const request = {
-      symbol: input.asset.id,
-      timeframe: input.timeframe,
-      timeframes: [...TIMEFRAMES],
-      startDate: input.startDate,
-      endDate: input.endDate
-    }
+    const sessionId = `session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+    const sessionName =
+      input.name?.trim() || `${input.asset.label} ${input.timeframe.toUpperCase()} Replay`
+
     set({
       status: 'downloading',
       progress: [],
@@ -616,120 +762,181 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       selectedDrawing: null,
       lastOrderResult: null
     })
+
     try {
-      const raw = await window.api.downloadData(request)
-      if (!('timeframes' in raw)) {
-        set({ status: 'error', error: raw.message ?? 'Download failed.' })
-        return
-      }
-      const res = raw as DownloadBatchResult
-      if (!res.ok) {
-        set({ status: 'error', error: res.message ?? 'Download failed.' })
-        return
+      const { candlesByTimeframe, runUpByTimeframe, sources } = await loadCandlesAndRunUp(
+        input.asset,
+        input.timeframe,
+        input.startDate,
+        input.endDate
+      )
+
+      const active: ActiveSession = {
+        ...input,
+        id: sessionId,
+        name: sessionName,
+        candlesByTimeframe,
+        runUpByTimeframe,
+        sources
       }
 
-      // downloadData reports counts; read the actual candles back from cache.
-      const candlesByTimeframe: Partial<Record<Timeframe, Candle[]>> = {}
-      for (const tf of TIMEFRAMES) {
-        const data = await window.api.getCachedData({
-          symbol: input.asset.id,
-          timeframe: tf,
-          startDate: input.startDate,
-          endDate: input.endDate
-        })
-        if (data.ok && data.candles.length > 0) candlesByTimeframe[tf] = data.candles
-      }
-      if (Object.values(candlesByTimeframe).every((c) => !c?.length)) {
-        set({
-          status: 'error',
-          error:
-            'Dukascopy returned no candles for that range (weekends and holidays have no data). Try a different asset or date range.'
-        })
-        return
+      const saved: SavedSession = {
+        id: sessionId,
+        name: sessionName,
+        asset: input.asset,
+        timeframe: input.timeframe,
+        startDate: input.startDate,
+        endDate: input.endDate,
+        startBalance: input.balance,
+        balance: input.balance,
+        orders: [],
+        currentIndex: 0,
+        playbackTimeframe: input.timeframe,
+        createdAt: Date.now(),
+        updatedAt: Date.now()
       }
 
-      const sources: Partial<Record<Timeframe, string>> = {}
-      for (const tfRes of res.timeframes) {
-        sources[tfRes.timeframe as Timeframe] = tfRes.source
-      }
-
-      // --- Run-up: a full 24 hours of context candles before the session ---
-      // The run-up = the most recent whole trading days before `startDate`
-      // whose candles add up to ≥ 24h of market time (walking days backward
-      // spans weekends/holidays and sees through short trading days, e.g. an
-      // index session ≈ 6-7h). Days are pulled ONE AT A TIME so we stop as
-      // soon as the base timeframe reaches 24h instead of downloading the
-      // whole lookback for nothing — and the budget adapts to the network
-      // state: a session that just downloaded from Dukascopy gets a generous
-      // window (its network is clearly working), a fully-cached session gets a
-      // short one (it's usually offline/rate-limited). The run-up can never
-      // abort the session: whatever lands is kept, then the session starts.
-      const runUpByTimeframe: Partial<Record<Timeframe, Candle[]>> = {}
-      const runUpEnd = isoAddDays(input.startDate, -1)
-      const windowCandles: Partial<Record<Timeframe, Candle[]>> = {}
-      const runUpMs = (tf: Timeframe): number => (windowCandles[tf]?.length ?? 0) * timeframeMs(tf)
-      const usedNetwork = res.timeframes.some((tfRes) => tfRes.source !== 'cache')
-      const runUpBudgetMs = usedNetwork ? RUNUP_NETWORK_BUDGET_MS : RUNUP_CACHEONLY_BUDGET_MS
-      const runUpStartedAt = Date.now()
-      for (let back = 1; back <= SESSION_RUNUP_LOOKBACK_DAYS; back++) {
-        if (runUpMs(input.timeframe) >= RUNUP_TARGET_MS) break
-        const remaining = runUpBudgetMs - (Date.now() - runUpStartedAt)
-        if (remaining <= 0) break
-        const day = isoAddDays(runUpEnd, -(back - 1))
-        const dayFetch = window.api.downloadData({
-          symbol: input.asset.id,
-          timeframe: input.timeframe,
-          timeframes: [...TIMEFRAMES],
-          startDate: day,
-          endDate: day
-        })
-        // Usually the `downloadData` above resolves on its own (cache days are
-        // instant; a live day takes a few seconds per timeframe), but if the
-        // whole budget drains mid-day we proceed without it — the fetch keeps
-        // running in the main process and simply fills the cache for the next
-        // session. Swallow late settles either way.
-        const settled = await Promise.race([
-          dayFetch.then(
-            () => true,
-            () => false // a run-up fetch failure must never fail the session
-          ),
-          sleep(remaining).then(() => false)
-        ])
-        void dayFetch.then(
-          () => undefined,
-          () => undefined
-        )
-        if (!settled) break
-        for (const tf of Object.keys(candlesByTimeframe) as Timeframe[]) {
-          const data = await window.api.getCachedData({
-            symbol: input.asset.id,
-            timeframe: tf,
-            startDate: day,
-            endDate: day
-          })
-          if (!data.ok || data.candles.length === 0) continue
-          const prev = windowCandles[tf]
-          // Earlier days are fetched after later ones — prepend to keep the
-          // window ascending.
-          windowCandles[tf] = prev ? data.candles.concat(prev) : data.candles
-        }
-      }
-
-      // Trim each timeframe's window down to its most recent ≥ 24h of candles.
-      for (const tf of Object.keys(candlesByTimeframe) as Timeframe[]) {
-        const win = windowCandles[tf]
-        if (!win || win.length === 0) continue
-        const runUp = runUpTail(win, timeframeMs(tf))
-        if (runUp.length > 0) runUpByTimeframe[tf] = runUp
-      }
+      const updated = [saved, ...get().savedSessions.filter((s) => s.id !== sessionId)]
+      persistSavedSessionsToStorage(updated)
 
       set({
         status: 'ready',
-        session: { ...input, candlesByTimeframe, runUpByTimeframe, sources }
+        session: active,
+        savedSessions: updated
       })
     } catch (err) {
       set({ status: 'error', error: err instanceof Error ? err.message : String(err) })
     }
+  },
+
+  resumeSavedSession: async (id: string) => {
+    const target = get().savedSessions.find((s) => s.id === id)
+    if (!target) return
+    if (get().session?.id === id) {
+      set({ playing: false })
+      return
+    }
+
+    set({
+      status: 'downloading',
+      progress: [],
+      error: null,
+      session: null,
+      playing: false
+    })
+
+    try {
+      const { candlesByTimeframe, runUpByTimeframe, sources } = await loadCandlesAndRunUp(
+        target.asset,
+        target.timeframe,
+        target.startDate,
+        target.endDate
+      )
+
+      const active: ActiveSession = {
+        id: target.id,
+        name: target.name,
+        asset: target.asset,
+        timeframe: target.timeframe,
+        startDate: target.startDate,
+        endDate: target.endDate,
+        balance: target.startBalance,
+        candlesByTimeframe,
+        runUpByTimeframe,
+        sources
+      }
+
+      set({
+        status: 'ready',
+        session: active,
+        balance: target.balance,
+        startBalance: target.startBalance,
+        orders: target.orders,
+        currentIndex: target.currentIndex,
+        playbackTimeframe: target.playbackTimeframe,
+        playing: false,
+        selectedDrawing: null,
+        lastOrderResult: null
+      })
+    } catch (err) {
+      set({ status: 'error', error: err instanceof Error ? err.message : String(err) })
+    }
+  },
+
+  deleteSavedSession: (id: string) => {
+    const updated = get().savedSessions.filter((s) => s.id !== id)
+    persistSavedSessionsToStorage(updated)
+    if (get().session?.id === id) {
+      set({ session: null, savedSessions: updated, playing: false })
+    } else {
+      set({ savedSessions: updated })
+    }
+  },
+
+  exitToMainMenu: () => {
+    const {
+      session,
+      orders,
+      balance,
+      startBalance,
+      currentIndex,
+      playbackTimeframe,
+      savedSessions
+    } = get()
+    if (session) {
+      const updated = savedSessions.map((s) => {
+        if (s.id === session.id) {
+          return {
+            ...s,
+            balance,
+            startBalance,
+            orders,
+            currentIndex,
+            playbackTimeframe,
+            updatedAt: Date.now()
+          }
+        }
+        return s
+      })
+      persistSavedSessionsToStorage(updated)
+      set({
+        playing: false,
+        session: null,
+        savedSessions: updated,
+        selectedDrawing: null
+      })
+    } else {
+      set({ playing: false, session: null })
+    }
+  },
+
+  saveCurrentSessionState: () => {
+    const {
+      session,
+      orders,
+      balance,
+      startBalance,
+      currentIndex,
+      playbackTimeframe,
+      savedSessions
+    } = get()
+    if (!session) return
+    const updated = savedSessions.map((s) => {
+      if (s.id === session.id) {
+        return {
+          ...s,
+          balance,
+          startBalance,
+          orders,
+          currentIndex,
+          playbackTimeframe,
+          updatedAt: Date.now()
+        }
+      }
+      return s
+    })
+    persistSavedSessionsToStorage(updated)
+    set({ savedSessions: updated })
   }
 }))
 

@@ -62,6 +62,7 @@ export default function NewSessionModal({
   const startSession = useSessionStore((s) => s.startSession)
   const dismissError = useSessionStore((s) => s.dismissError)
 
+  const [sessionName, setSessionName] = useState('EUR/USD M1 Replay')
   const [assetId, setAssetId] = useState('eurusd')
   const [timeframe, setTimeframe] = useState<Timeframe>('m1')
   const [startDate, setStartDate] = useState('2024-01-02')
@@ -80,12 +81,26 @@ export default function NewSessionModal({
   const valid = useMemo(() => {
     const s = Date.parse(`${startDate}T00:00:00Z`)
     const e = Date.parse(`${endDate}T00:00:00Z`)
-    return !!asset && Number.isFinite(s) && Number.isFinite(e) && e >= s && balance > 0
-  }, [asset, startDate, endDate, balance])
+    return (
+      sessionName.trim().length > 0 &&
+      !!asset &&
+      Number.isFinite(s) &&
+      Number.isFinite(e) &&
+      e >= s &&
+      balance > 0
+    )
+  }, [sessionName, asset, startDate, endDate, balance])
 
   const handleStart = async (): Promise<void> => {
     if (!valid || !asset) return
-    await startSession({ asset, timeframe, startDate, endDate, balance })
+    await startSession({
+      name: sessionName.trim(),
+      asset,
+      timeframe,
+      startDate,
+      endDate,
+      balance
+    })
     // startSession settles with 'ready' (success) or 'error'. On success the
     // session screen takes over, so close the modal; on error it stays open
     // showing the failure with a retry path.
@@ -149,6 +164,20 @@ export default function NewSessionModal({
           /* -------- The form -------- */
           <>
             <FieldGroup className="gap-4">
+              <Field>
+                <FieldLabel htmlFor="ns-session-name">Session Name</FieldLabel>
+                <Input
+                  id="ns-session-name"
+                  placeholder="e.g. EUR/USD Jan 2024 Breakouts"
+                  value={sessionName}
+                  onChange={(e) => setSessionName(e.target.value)}
+                  required
+                />
+                <FieldDescription>
+                  Give your session a distinct name to recognize it in the main menu.
+                </FieldDescription>
+              </Field>
+
               <Field>
                 <FieldLabel>Asset</FieldLabel>
                 <Select value={assetId} onValueChange={setAssetId}>

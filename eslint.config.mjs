@@ -41,7 +41,8 @@ export default defineConfig(
       'react-refresh/only-export-components': 'off',
       // shadcn/ui in a TS codebase: props are typed, not PropTypes-validated.
       // The calendar's custom render props (from react-day-picker) trigger it.
-      'react/prop-types': 'off'
+      'react/prop-types': 'off',
+      '@typescript-eslint/explicit-function-return-type': 'off'
     }
   },
   eslintConfigPrettier
