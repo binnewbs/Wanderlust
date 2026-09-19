@@ -1078,6 +1078,201 @@ function createWindow(): void {
         await shot('/tmp/opencode/wanderlust-9-overlay.png')
         note('ui8', ui8)
 
+        // ---- 4i. Regression for "lines STILL move when zooming / free viewing"
+        // and "don't match the positioning tool": ui8 proved the strips are glued
+        // through the ANIMATED wheel-zoom glide (post-paint viewport hook), but
+        // the scheduler-driven drag gestures (data-area PAN, TIME-axis zoom drag,
+        // PRICE-axis scale drag) repaint on their own lazily-registered rAF — the
+        // overlay's rAF loop runs BEFORE that flush, so strips were placed with
+        // the PRE-paint scale and lagged the canvas one frame DURING the drag
+        // (the drawing-tool lines, painted ON the canvas, stayed glued — hence
+        // "doesn't match the tool" while the strips float behind it).
+        // ui9 replays each drag gesture and samples the strips MID-GESTURE,
+        // including a "batch" variant: many moves dispatched with NO frame
+        // between then a single rAF — the exact frame where pre-fix strips are
+        // stale (loop placed pre-paint; the flush then paints the new scale) and
+        // post-fix strips are fresh (same-frame canvas-gesture hook re-places
+        // after the flush). Pass = every sample within 1.5px of priceToY.
+        const ui9 = await js(`(async () => {
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          const q = (s) => document.querySelector(s);
+          const qa = (s) => [...document.querySelectorAll(s)];
+          const fail = (step, extra = {}) => ({ ok: false, step, ...extra });
+          const wl = window.__wanderlust;
+          if (!wl) return fail('no-e2e-handle');
+          const shell = wl.chart;
+          const renderer = [shell?.rendererControl?.renderer, shell?.renderer, shell?.orchestrator?.renderer]
+            .find((rr) => rr && rr.scene && rr.coords);
+          if (!renderer) return fail('no-renderer');
+          const pane = [...(renderer.scene?.panes?.values() ?? [])].find((p) => p.kind === 'price');
+          if (!pane) return fail('no-pane');
+          const dataCanvas = renderer.dataCanvas?.tagName === 'CANVAS' ? renderer.dataCanvas : null;
+          if (!dataCanvas) return fail('no-canvas');
+          const entryEl = q('[data-testid="order-level-entry"]');
+          const slEl = q('[data-testid="order-level-stopLoss"]');
+          const tpEl = q('[data-testid="order-level-takeProfit"]');
+          const root = slEl?.parentElement;
+          if (!root) return fail('no-root');
+          const label = (kind) => q('[data-testid="order-level-' + kind + '-price"]')?.textContent?.trim() ?? null;
+          const labelsBefore = ['entry', 'stopLoss', 'takeProfit'].map((k) => k + ':' + label(k));
+          const STRIP_HALF = 6;
+          const levelEls = { entry: entryEl, stopLoss: slEl, takeProfit: tpEl };
+          const stopTxt = label('stopLoss');
+          const entryTxt = label('entry');
+          const tpTxt = label('takeProfit');
+          // True (full-precision) order prices the overlay places strips at —
+          // exposed by the overlay's hash-gated debug handle. The 5dp LABEL
+          // rounds the SL price (a yToPrice float with extra decimals), which
+          // at the zoom-left ultra-tight scale reads as several px — an
+          // artifact of comparing against the rounded label. The strips are
+          // glued to the TRUE price; sample against THAT.
+          const truePrice = (kind) => {
+            const specs = window.__wanderlustLevels?.specs ?? [];
+            const s = specs.find((x) => x.level === kind);
+            return s ? s.price : NaN;
+          };
+          if (![truePrice('entry'), truePrice('stopLoss'), truePrice('takeProfit')].every(Number.isFinite)) return fail('no-specs');
+          // A single sample: strip DOM Y (through the overlay origin) vs the exact
+          // priceToY math Vela's painter AND the drawing tool use, at THIS instant.
+          const sample = () => {
+            const rootRect = root.getBoundingClientRect();
+            const out = [];
+            for (const kind of ['entry', 'stopLoss', 'takeProfit']) {
+              const el = levelEls[kind];
+              if (!el) { out.push({ kind, miss: true }); continue; }
+              const price = truePrice(kind);
+              const expTop = renderer.coords.priceToY(price, pane.scale, pane.bounds) - STRIP_HALF;
+              const actTop = el.getBoundingClientRect().top - rootRect.top;
+              out.push({ kind, exp: Math.round(expTop * 10) / 10, act: Math.round(actTop * 10) / 10, d: Math.round((actTop - expTop) * 10) / 10 });
+            }
+            return out;
+          };
+          const maxD = (s) => s.every((d) => !d.miss) ? Math.max(...s.map((d) => Math.abs(d.d))) : Infinity;
+          const almost = (v) => Math.round(v * 1000) / 1000;
+          const cRect = dataCanvas.getBoundingClientRect();
+          const W = cRect.width, H = cRect.height;
+          const pt = (rx, ry) => ({ clientX: cRect.left + rx, clientY: cRect.top + ry });
+          let pid = 101;
+          const press = (rx, ry) => {
+            const p = pt(rx, ry);
+            dataCanvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: pid, pointerType: 'mouse', clientX: p.clientX, clientY: p.clientY, button: 0, buttons: 1 }));
+            return { x: rx, y: ry };
+          };
+          const moveTo = (state, rx, ry) => {
+            const p = pt(rx, ry);
+            dataCanvas.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, pointerId: pid, pointerType: 'mouse', clientX: p.clientX, clientY: p.clientY, button: 0, buttons: 1 }));
+            state.x = rx; state.y = ry;
+          };
+          const release = (state) => {
+            const p = pt(state ? state.x : 0, state ? state.y : 0);
+            dataCanvas.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerId: pid, pointerType: 'mouse', clientX: p.clientX, clientY: p.clientY, button: 0, buttons: 0 }));
+            pid += 1;
+          };
+          const rafOnce = () => new Promise((r) => requestAnimationFrame(r));
+          const viewportChanged = (v0) => {
+            const v = renderer.coords.getViewport();
+            return v && (v.barSpacing !== v0.barSpacing || v.rightOffset !== v0.rightOffset);
+          };
+          const results = {};
+          const scalePhotograph = () => ({ min: pane.scale.min, max: pane.scale.max, vp: renderer.coords.getViewport() });
+          const scaleChangedSince = (p0) => p0 && (pane.scale.min !== p0.min || pane.scale.max !== p0.max);
+
+          // Reset to AUTOSCALE (ui8's wheel zoom left it null) so pan/time drags
+          // recompute the scale from the visible bars.
+          pane.manualScale = null;
+          await sleep(180);
+
+          // ── (1) DATA-AREA DRAG-PAN (applyViewport + autoscale recompute) ──
+          {
+            const p0 = scalePhotograph();
+            const s = press(W * 0.55, H * 0.45);
+            // BATCH: 6 moves, zero frames between → one scheduler flush paints a
+            // NEW scale while a bare rAF loop would still write the PRE-batch one.
+            for (let i = 0; i < 6; i++) moveTo(s, s.x + (i + 1) * 20, s.y);
+            await rafOnce(); // exactly one frame after the batch
+            const batch = sample();
+            const vpAfter = viewportChanged(p0.vp);
+            const scaleAfter = scaleChangedSince(p0);
+            // INTERLEAVED continuation of the same drag (real-gesture cadence).
+            const inter = [];
+            for (let i = 0; i < 6; i++) {
+              moveTo(s, s.x + 120 + (i + 1) * 14, s.y);
+              await rafOnce();
+              const sm = sample();
+              inter.push({ i, maxD: maxD(sm), d: sm, min: almost(pane.scale.min), max: almost(pane.scale.max) });
+            }
+            const scaleMid = scaleChangedSince(p0);
+            release();
+            await sleep(180);
+            const settle = sample();
+            results.pan = {
+              batchD: batch, batchMaxD: maxD(batch), vpChanged: !!vpAfter, scaleChanged: !!scaleAfter,
+              interMaxD: inter.length ? Math.max(...inter.map((x) => x.maxD)) : Infinity, inter,
+              settleMaxD: maxD(settle), settle, interSawScale: !!scaleMid
+            };
+          }
+
+          // ── (2) TIME-AXIS ZOOM DRAG (bottom strip → applyViewport) ──
+          {
+            const p0 = scalePhotograph();
+            const s = press(W * 0.55, H - 10); // inside the 22px time-axis strip
+            for (let i = 0; i < 6; i++) moveTo(s, s.x - (i + 1) * 18, s.y);
+            await rafOnce();
+            const batch = sample();
+            const vpChanged = viewportChanged(p0.vp);
+            const inter = [];
+            for (let i = 0; i < 5; i++) {
+              moveTo(s, s.x - 108 - (i + 1) * 12, s.y);
+              await rafOnce();
+              inter.push({ i, maxD: maxD(sample()) });
+            }
+            release();
+            await sleep(180);
+            results.time = { batchMaxD: maxD(batch), batch, vpChanged, interMaxD: inter.length ? Math.max(...inter.map((x) => x.maxD)) : Infinity };
+          }
+
+          // ── (3) PRICE-AXIS SCALE DRAG (right strip → setManualScale) ──
+          {
+            const p0 = scalePhotograph();
+            const s = press(W - 32, H * 0.45); // inside the 64px price axis
+            for (let i = 0; i < 6; i++) moveTo(s, s.x, s.y + (i + 1) * 16);
+            await rafOnce();
+            const batch = sample();
+            const inter = [];
+            for (let i = 0; i < 5; i++) {
+              moveTo(s, s.x, s.y + 96 + (i + 1) * 12);
+              await rafOnce();
+              inter.push({ i, maxD: maxD(sample()) });
+            }
+            release();
+            await sleep(180);
+            results.price = { batchMaxD: maxD(batch), batch, interMaxD: inter.length ? Math.max(...inter.map((x) => x.maxD)) : Infinity, manual: pane.manualScale != null };
+          }
+
+          // ── FINAL: everything settles back to an EXACT position, and the
+          // drag gestures must NOT have changed any order prices ──
+          const finalSample = sample();
+          const finalExact = finalSample.every((d) => !d.miss && Math.abs(d.d) <= 1.5);
+          const labelsAfter = ['entry', 'stopLoss', 'takeProfit'].map((k) => k + ':' + label(k));
+          const pricesStable = labelsAfter.every((lab) => labelsBefore.includes(lab));
+          const rawLevels = window.__wanderlustLevels ?? null;
+          const dbgLevels = rawLevels ? { ...rawLevels } : null;
+          if (dbgLevels) { delete dbgLevels.rendererObj; delete dbgLevels.ySnap; }
+          const T = 1.5;
+          const ok = results.pan.batchMaxD <= T && results.pan.interMaxD <= T && results.pan.settleMaxD <= T
+            && results.time.batchMaxD <= T && results.time.interMaxD <= T
+            && results.price.batchMaxD <= T && results.price.interMaxD <= T
+            && finalExact && pricesStable;
+          return {
+            ok, step: 'final',
+            pan: results.pan, time: results.time, price: results.price,
+            finalExact, finalSample, pricesStable,
+            canvasEv: dbgLevels?.canvasEv ?? null, dbg: dbgLevels
+          };
+        })()`)
+        await shot('/tmp/opencode/wanderlust-10-dragglue.png')
+        note('ui9', ui9)
+
         console.log('[e2e] shell      =', JSON.stringify(shellDom))
         console.log('[e2e] download#1 =', JSON.stringify(download1))
         console.log(
@@ -1096,10 +1291,11 @@ function createWindow(): void {
         console.log('[e2e] ui6 playv  =', JSON.stringify(ui6))
         console.log('[e2e] ui7 freev =', JSON.stringify(ui7))
         console.log('[e2e] ui8 overlay =', JSON.stringify(ui8))
+        console.log('[e2e] ui9 dragglue =', JSON.stringify(ui9))
         console.log('[e2e] console   =', JSON.stringify(consoleLogs.slice(-8)))
         console.log('[e2e] console-ui =', JSON.stringify(consoleLogs.slice(logsBefore).slice(0, 6)))
         console.log(
-          '[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport,7-playback-view,8-freeview,9-overlay}.png'
+          '[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport,7-playback-view,8-freeview,9-overlay,10-dragglue}.png'
         )
       } catch (err) {
         console.error('[e2e] FAILED', err)

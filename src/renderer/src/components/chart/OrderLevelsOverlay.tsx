@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useSessionStore } from '@/store/session'
 import {
   PRICE_PANE_ID,
+  onRendererCanvasGesture,
   onRendererViewport,
   rendererOf,
   velaChartRef,
@@ -21,13 +22,22 @@ import {
  *   - stop    — red, draggable   → reprices the order's stopLoss live
  *   - target  — green, draggable → reprices the order's takeProfit live
  *
- * Placement is driven by Vela's post-paint viewport callback (fires at the end
- * of every animated frame, after the candles are painted) PLUS a continuous rAF
- * fallback — the renderer is RE-RESOLVED from `velaChartRef` on every placement
- * and each price maps through the native `coords.priceToY(price, pane.scale,
- * pane.bounds)` — the exact math Vela's candle painter uses — so strips stay
- * glued to the price axis across pan/zoom/autoscale/playback with zero frame
- * lag. Drag goes the other way: `yToPrice` → a pure, guarded store action
+ * Placement is driven by THREE synchronized sources, so the strips are glued to
+ * the price axis through EVERY repaint path (not just eased ones):
+ *   1. Vela's post-paint viewport callback — fires at the END of every animated
+ *      frame (wheel-zoom glide, fling, autoscale glide), after `paintData()`.
+ *   2. A same-frame post-paint hook on the DATA canvas (the element Vela's
+ *      input controller binds to): gesture listeners registered AFTER Vela's
+ *      own handlers schedule placement on the next rAF, which the browser runs
+ *      AFTER the scheduler's repaint rAF — so drag-pan, time-axis zoom drag and
+ *      price-axis scale drags never leave the strips one frame behind the
+ *      canvas-painted candles/drawing tool.
+ *   3. A continuous rAF fallback for everything else (playback pushes, resize).
+ * Every placement re-resolves the native renderer from `velaChartRef` and maps
+ * each price through `coords.priceToY(price, pane.scale, pane.bounds)` — the
+ * exact math Vela's candle painter AND the Long/Short Position tool use — so
+ * the strips coincide with the drawing tool's lines at the same price. Drag
+ * goes the other way: `yToPrice` → a pure, guarded store action
  * (`updateOrderLevel`), picked up by the next evaluate.
  *
  * Black-screen safety: every native access is null-guarded and try/caught; on
@@ -110,23 +120,32 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
 
   // Placement — re-resolves the native renderer on EVERY call (never cached),
   // keeps the last positions on any failure, and keeps Vela's post-paint
-  // viewport hook attached to the CURRENT renderer. Vela fires that hook at the
-  // END of every animated frame, after `paintData()` — so strips re-glue the
-  // moment the candles are painted, instead of lagging one frame behind them
-  // during zoom/fling/autoscale glides (which a bare rAF loop does, because the
-  // overlay's rAF runs BEFORE Vela's own in the same frame). The rAF loop stays
-  // as a continuous fallback: whichever writes last in a frame, the per-frame
-  // result is always the post-paint scale, so strips are frame-exact.
+  // viewport hook + the same-frame canvas-gesture hook attached to the CURRENT
+  // renderer. Vela fires the viewport hook at the END of every animated frame
+  // (post-`paintData`), and the canvas hook schedules placement after a
+  // gesture-driven repaint IN THE SAME FRAME (its rAF runs after the
+  // scheduler's flush, because these listeners are registered after Vela's own
+  // on the same element) — so strips re-glue the moment the candles are painted
+  // on every path, instead of lagging one frame behind them during
+  // drag-pan/time-axis-zoom/price-axis-scale (which a bare rAF loop does: the
+  // overlay's rAF runs BEFORE Vela's scheduler flush in the same frame). The
+  // rAF loop stays as a continuous fallback: whichever source writes last in a
+  // frame, the per-frame result is always the post-paint scale, so strips are
+  // frame-exact.
   useEffect(() => {
     let alive = true
     let raf = 0
     let unsubViewport: (() => void) | null = null
+    let unsubCanvas: (() => void) | null = null
     let attachedRenderer: RendererBridge | null = null
+    let attachedCanvas: { addEventListener(type: string, fn: (e: Event) => void): unknown } | null =
+      null
     const placeRef: { current: (() => void) | null } = { current: null }
     // Hash-gated debug counters (E2E only; inert for normal users).
     interface LevelDbg extends Record<string, unknown> {
       place: number
       vp: number
+      canvasEv: number
       wroteEntry: number
       wroteSL: number
       wroteTP: number
@@ -149,6 +168,7 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
         w.__wanderlustLevels ??= {
           place: 0,
           vp: 0,
+          canvasEv: 0,
           wroteEntry: 0,
           wroteSL: 0,
           wroteTP: 0,
@@ -183,11 +203,14 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
           dbg.attachKind =
             typeof unsubViewport === 'function' ? 'ok' : unsubViewport === null ? 'null' : 'none'
         }
-        // Re-attach the post-paint hook whenever the renderer is replaced
-        // (Vela's reload path swaps the native renderer between frames).
+        // Re-attach the post-paint hooks whenever the renderer is replaced
+        // (Vela's reload path swaps the native renderer between frames) or the
+        // data canvas is recreated (rare WebGL2→canvas2d fallback).
         if (attachedRenderer !== renderer) {
           unsubViewport?.()
+          unsubCanvas?.()
           unsubViewport = null
+          unsubCanvas = null
           attachedRenderer = renderer
           unsubViewport = onRendererViewport(
             renderer,
@@ -202,6 +225,27 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
           if (dbg)
             dbg.attachKind =
               typeof unsubViewport === 'function' ? 'ok' : unsubViewport === null ? 'null' : 'none'
+        }
+        const canvas = renderer.dataCanvas ?? null
+        if (attachedCanvas !== canvas) {
+          unsubCanvas?.()
+          unsubCanvas = null
+          attachedCanvas = canvas
+          if (canvas) {
+            unsubCanvas = onRendererCanvasGesture(
+              renderer,
+              () => {
+                if (dbg) dbg.canvasEv += 1
+                placeRef.current?.()
+              },
+              (reason) => {
+                if (dbg) dbg.canvasAttachError = reason
+              }
+            )
+          }
+          if (dbg)
+            dbg.canvasAttach =
+              typeof unsubCanvas === 'function' ? 'ok' : unsubCanvas === null ? 'none' : 'missing'
         }
         const pane = renderer.scene?.panes?.get(PRICE_PANE_ID)
         if (!pane) {
@@ -232,6 +276,16 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
           dbg.eOk += 1
           dbg.paneScaleMin = scale.min
           dbg.paneScaleMax = scale.max
+          // True (unrounded) prices the strips are placed at — lets the E2E
+          // compare against the exact stored price instead of the 5dp label.
+          const specs: { level: string; price: number }[] = []
+          for (const spec of stripsRef.current) {
+            const level = spec.level
+            if (!specs.some((s) => s.level === level)) {
+              specs.push({ level, price: spec.price })
+            }
+          }
+          dbg.specs = specs
         }
         for (const spec of stripsRef.current) {
           const el = stripEls.current.get(spec.key)
@@ -279,6 +333,7 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
       alive = false
       cancelAnimationFrame(raf)
       unsubViewport?.()
+      unsubCanvas?.()
     }
   }, [])
 
