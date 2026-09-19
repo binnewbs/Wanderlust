@@ -45,26 +45,21 @@ export default function AnalyticsView({
     <div className="flex h-full w-full flex-col overflow-y-auto bg-background p-6">
       {/* Top Banner */}
       <div className="mb-6 flex flex-wrap items-center justify-between gap-4 border-b border-border/60 pb-5">
-        <div className="flex items-center gap-3">
-          <div className="flex size-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
-            <BarChart3 className="size-5" />
+        <div>
+          <div className="flex items-center gap-2.5">
+            <h2 className="text-xl font-bold tracking-tight text-foreground">
+              {session?.name ?? 'Session Analytics'}
+            </h2>
+            <Badge
+              variant={isProfitable ? 'secondary' : 'destructive'}
+              className="font-mono text-xs"
+            >
+              Net {formatCurrency(kpis.netProfit)}
+            </Badge>
           </div>
-          <div>
-            <div className="flex items-center gap-2.5">
-              <h2 className="text-xl font-bold tracking-tight text-foreground">
-                {session?.name ?? 'Session Analytics'}
-              </h2>
-              <Badge
-                variant={isProfitable ? 'secondary' : 'destructive'}
-                className="font-mono text-xs"
-              >
-                Net {formatCurrency(kpis.netProfit)}
-              </Badge>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Performance metrics, equity trajectory, calendar PnL, and trade ledger.
-            </p>
-          </div>
+          <p className="text-xs text-muted-foreground">
+            Performance metrics, equity trajectory, calendar PnL, and trade ledger.
+          </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
