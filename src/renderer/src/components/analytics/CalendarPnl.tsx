@@ -174,7 +174,7 @@ export default function CalendarPnl({ orders, defaultDate }: CalendarPnlProps): 
   }
 
   return (
-    <Card className="bg-card/70 backdrop-blur-xs">
+    <Card className="mx-auto w-full max-w-4xl bg-card/70 backdrop-blur-xs">
       <CardHeader className="pb-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
@@ -227,7 +227,7 @@ export default function CalendarPnl({ orders, defaultDate }: CalendarPnlProps): 
 
       <CardContent>
         {/* Days of week header */}
-        <div className="grid grid-cols-7 gap-1 text-center font-medium text-[11px] text-muted-foreground mb-1">
+        <div className="mb-1.5 grid grid-cols-7 gap-1.5 text-center text-[11px] font-medium text-muted-foreground">
           {WEEKDAYS.map((day) => (
             <div key={day} className="py-1">
               {day}
@@ -236,7 +236,7 @@ export default function CalendarPnl({ orders, defaultDate }: CalendarPnlProps): 
         </div>
 
         {/* Days grid */}
-        <div className="grid grid-cols-7 gap-1">
+        <div className="grid grid-cols-7 gap-1.5">
           {cells.map((cell) => {
             const hasTrades = cell.stat && cell.stat.tradeCount > 0
             const stat = cell.stat
@@ -245,7 +245,7 @@ export default function CalendarPnl({ orders, defaultDate }: CalendarPnlProps): 
               return (
                 <div
                   key={cell.dateKey}
-                  className="flex h-16 flex-col justify-between rounded-lg border border-transparent p-1.5 opacity-25"
+                  className="flex aspect-square flex-col justify-between rounded-lg border border-transparent p-2 opacity-25"
                 >
                   <span className="text-[11px] text-muted-foreground">{cell.dayNumber}</span>
                 </div>
@@ -256,7 +256,7 @@ export default function CalendarPnl({ orders, defaultDate }: CalendarPnlProps): 
               return (
                 <div
                   key={cell.dateKey}
-                  className="flex h-16 flex-col justify-between rounded-lg border border-border/40 bg-muted/15 p-1.5 transition-colors"
+                  className="flex aspect-square flex-col justify-between rounded-lg border border-border/40 bg-muted/15 p-2 transition-colors"
                 >
                   <span className="text-[11px] font-medium text-muted-foreground">
                     {cell.dayNumber}
@@ -278,7 +278,7 @@ export default function CalendarPnl({ orders, defaultDate }: CalendarPnlProps): 
               <HoverCard key={cell.dateKey} openDelay={100} closeDelay={150}>
                 <HoverCardTrigger asChild>
                   <div
-                    className={`flex h-16 cursor-pointer flex-col justify-between rounded-lg border p-1.5 transition-all shadow-xs ${cellStyle}`}
+                    className={`flex aspect-square cursor-pointer flex-col justify-between rounded-lg border p-2 transition-all shadow-xs ${cellStyle}`}
                   >
                     <div className="flex items-center justify-between text-[11px] font-medium">
                       <span>{cell.dayNumber}</span>

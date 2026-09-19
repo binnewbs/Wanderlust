@@ -87,7 +87,7 @@ export default function SessionsMenu({
       </div>
 
       {/* Sessions Grid */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,300px),340px))] gap-5">
         {savedSessions.map((s: SavedSession) => {
           const closedOrders = s.orders.filter((o) => o.status === 'closed')
           const netPnl = s.balance - s.startBalance
@@ -99,36 +99,39 @@ export default function SessionsMenu({
           return (
             <Card
               key={s.id}
-              className="flex flex-col justify-between border-border/80 bg-card/80 transition-all hover:border-primary/40 hover:shadow-md"
+              className="flex aspect-square w-full flex-col justify-between border-border/80 bg-card/80 transition-all hover:border-primary/40 hover:shadow-md"
             >
-              <CardHeader className="pb-3">
+              <CardHeader className="p-4 pb-2">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
                     <CardTitle className="truncate text-base font-semibold text-foreground">
                       {s.name}
                     </CardTitle>
                     <CardDescription className="mt-1 flex items-center gap-1.5 text-xs">
-                      <Calendar className="size-3 text-muted-foreground" />
-                      <span>
+                      <Calendar className="size-3 shrink-0 text-muted-foreground" />
+                      <span className="truncate">
                         {s.startDate} → {s.endDate}
                       </span>
                     </CardDescription>
                   </div>
-                  <Badge variant="outline" className="font-semibold uppercase tracking-wider">
+                  <Badge
+                    variant="outline"
+                    className="shrink-0 font-semibold uppercase tracking-wider"
+                  >
                     {s.asset.label}
                   </Badge>
                 </div>
-                <div className="mt-2 flex items-center gap-2">
+                <div className="mt-1.5 flex items-center gap-2">
                   <span className="text-[11px] text-muted-foreground">
                     Updated {new Date(s.updatedAt).toLocaleDateString()}
                   </span>
                 </div>
               </CardHeader>
 
-              <CardContent className="py-2">
-                <div className="grid grid-cols-2 gap-2 rounded-lg border border-border/50 bg-muted/20 p-3 text-xs">
+              <CardContent className="p-4 py-1">
+                <div className="grid grid-cols-2 gap-2 rounded-lg border border-border/50 bg-muted/20 p-2.5 text-xs">
                   <div>
-                    <span className="text-[11px] text-muted-foreground">Net PnL</span>
+                    <span className="text-[10px] uppercase text-muted-foreground">Net PnL</span>
                     <div
                       className={`font-mono text-sm font-bold ${
                         isProfitable ? 'text-chart-2' : 'text-destructive'
@@ -139,14 +142,16 @@ export default function SessionsMenu({
                   </div>
 
                   <div>
-                    <span className="text-[11px] text-muted-foreground">Balance</span>
+                    <span className="text-[10px] uppercase text-muted-foreground">Balance</span>
                     <div className="font-mono text-sm font-semibold text-foreground">
                       {formatPlainBalance(s.balance)}
                     </div>
                   </div>
 
                   <div className="border-t border-border/40 pt-1.5">
-                    <span className="text-[11px] text-muted-foreground">Closed Trades</span>
+                    <span className="text-[10px] uppercase text-muted-foreground">
+                      Closed Trades
+                    </span>
                     <div className="font-mono font-medium text-foreground">
                       {closedOrders.length}{' '}
                       <span className="text-[10px] text-muted-foreground">
@@ -156,7 +161,9 @@ export default function SessionsMenu({
                   </div>
 
                   <div className="border-t border-border/40 pt-1.5">
-                    <span className="text-[11px] text-muted-foreground">Open / Pending</span>
+                    <span className="text-[10px] uppercase text-muted-foreground">
+                      Open / Pending
+                    </span>
                     <div className="font-mono font-medium text-foreground">
                       {pendingActive} orders
                     </div>
@@ -164,7 +171,7 @@ export default function SessionsMenu({
                 </div>
               </CardContent>
 
-              <CardFooter className="flex items-center justify-between border-t border-border/50 pt-3">
+              <CardFooter className="flex items-center justify-between border-t border-border/50 p-4 pt-2.5">
                 <div className="flex items-center gap-2">
                   <Button size="sm" onClick={() => onResumeSession(s.id)}>
                     <Play data-icon="inline-start" />

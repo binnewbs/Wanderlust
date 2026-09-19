@@ -1,7 +1,6 @@
 import React, { useMemo } from 'react'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { useSessionStore } from '@/store/session'
 import {
   calculateKpiMetrics,
@@ -14,13 +13,15 @@ import EquityChart from './EquityChart'
 import DeepInsights from './DeepInsights'
 import CalendarPnl from './CalendarPnl'
 import TradeJournal from './TradeJournal'
-import { BarChart3, TrendingUp, Calendar, BookOpen, CandlestickChart } from 'lucide-react'
+import { BarChart3, TrendingUp, Calendar, BookOpen } from 'lucide-react'
 
 interface AnalyticsViewProps {
   onBackToChart?: () => void
 }
 
-export default function AnalyticsView({ onBackToChart }: AnalyticsViewProps): React.JSX.Element {
+export default function AnalyticsView({
+  onBackToChart: _onBackToChart
+}: AnalyticsViewProps): React.JSX.Element {
   const session = useSessionStore((s) => s.session)
   const balance = useSessionStore((s) => s.balance)
   const startBalance = useSessionStore((s) => s.startBalance)
@@ -77,12 +78,6 @@ export default function AnalyticsView({ onBackToChart }: AnalyticsViewProps): Re
                 {session.startDate} → {session.endDate}
               </span>
             </div>
-          )}
-          {onBackToChart && (
-            <Button variant="outline" size="sm" onClick={onBackToChart} className="gap-1.5">
-              <CandlestickChart data-icon="inline-start" />
-              Chart & Trading
-            </Button>
           )}
         </div>
       </div>

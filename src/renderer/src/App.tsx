@@ -68,40 +68,41 @@ export default function App(): React.JSX.Element {
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
       {/* Header */}
-      <header className="flex items-center justify-between border-b border-border px-5 py-3">
-        <div className="flex items-center gap-2.5">
+      <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border px-4 py-2 sm:px-5">
+        <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
           {session && (
             <>
               <Button
                 variant="ghost"
-                size="sm"
+                size="icon-sm"
                 onClick={exitToMainMenu}
-                className="gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+                className="shrink-0 text-muted-foreground hover:text-foreground"
                 title="Back to sessions list"
+                aria-label="Back to sessions list"
               >
-                <ArrowLeft data-icon="inline-start" />
-                Sessions
+                <ArrowLeft />
               </Button>
-              <Separator orientation="vertical" className="h-4" />
+              <Separator orientation="vertical" className="h-4 shrink-0" />
             </>
           )}
 
-          <Activity className="size-5 text-primary" />
-          <h1 className="text-base font-semibold tracking-tight">Wanderlust</h1>
-          <Badge variant="secondary">Phase 5 & 6 · replay, orders & analytics</Badge>
+          <div className="flex shrink-0 items-center gap-2">
+            <Activity className="size-5 text-primary" />
+            <h1 className="text-base font-semibold tracking-tight">Wanderlust</h1>
+          </div>
 
           {session && (
-            <div className="ml-1 hidden items-center gap-2 rounded-full border border-border bg-card px-2.5 py-0.5 text-[11px] text-muted-foreground sm:flex">
-              <span className="font-semibold text-foreground">{session.name}</span>
-              <span>·</span>
-              <span className="font-medium text-foreground">{session.asset.label}</span>
-              <span className="uppercase">{session.timeframe}</span>
-              <span>
+            <div className="ml-1 flex min-w-0 max-w-[200px] shrink items-center gap-1.5 overflow-hidden rounded-full border border-border bg-card px-2.5 py-0.5 text-[11px] whitespace-nowrap text-muted-foreground sm:max-w-[300px] md:max-w-[420px] lg:max-w-[560px]">
+              <span className="min-w-0 truncate font-semibold text-foreground">{session.name}</span>
+              <span className="shrink-0">·</span>
+              <span className="shrink-0 font-medium text-foreground">{session.asset.label}</span>
+              <span className="shrink-0 uppercase">{session.timeframe}</span>
+              <span className="hidden shrink-0 md:inline">
                 {session.startDate} → {session.endDate}
               </span>
               <Badge
                 variant="outline"
-                className={`px-1.5 py-px text-[9px] font-medium uppercase ${sourceStyles[sessionSource] ?? ''}`}
+                className={`shrink-0 px-1.5 py-px text-[9px] font-medium uppercase ${sourceStyles[sessionSource] ?? ''}`}
               >
                 {sessionSource}
               </Badge>
@@ -109,49 +110,46 @@ export default function App(): React.JSX.Element {
           )}
         </div>
 
-        {/* Center navigation inside session */}
-        {session && (
-          <div className="flex items-center rounded-lg border border-border bg-muted/40 p-0.5">
-            <Button
-              variant={activeView === 'chart' ? 'secondary' : 'ghost'}
-              size="sm"
-              onClick={() => setActiveView('chart')}
-              className="h-7 gap-1.5 px-2.5 text-xs"
-            >
-              <CandlestickChart data-icon="inline-start" />
-              Chart & Trading
+        {/* Right side navigation / actions */}
+        <div className="flex shrink-0 items-center gap-2">
+          {session ? (
+            <>
+              {/* Headless E2E balance test hook (hidden visually) */}
+              <span data-testid="header-balance" className="sr-only">
+                {balance}
+              </span>
+              <div className="flex items-center rounded-lg border border-border bg-muted/40 p-0.5">
+                <Button
+                  variant={activeView === 'chart' ? 'secondary' : 'ghost'}
+                  size="sm"
+                  onClick={() => setActiveView('chart')}
+                  className="h-7 gap-1.5 px-2.5 text-xs"
+                >
+                  <CandlestickChart data-icon="inline-start" />
+                  Chart & Trading
+                </Button>
+                <Button
+                  variant={activeView === 'analytics' ? 'secondary' : 'ghost'}
+                  size="sm"
+                  onClick={() => setActiveView('analytics')}
+                  className="h-7 gap-1.5 px-2.5 text-xs"
+                >
+                  <BarChart3 data-icon="inline-start" />
+                  Analytics & Journal
+                  {closedTradesCount > 0 && (
+                    <Badge variant="outline" className="ml-0.5 h-4 px-1 text-[10px]">
+                      {closedTradesCount}
+                    </Badge>
+                  )}
+                </Button>
+              </div>
+            </>
+          ) : (
+            <Button onClick={openModal} size="sm">
+              <Plus data-icon="inline-start" />
+              New Session
             </Button>
-            <Button
-              variant={activeView === 'analytics' ? 'secondary' : 'ghost'}
-              size="sm"
-              onClick={() => setActiveView('analytics')}
-              className="h-7 gap-1.5 px-2.5 text-xs"
-            >
-              <BarChart3 data-icon="inline-start" />
-              Analytics & Journal
-              {closedTradesCount > 0 && (
-                <Badge variant="outline" className="ml-0.5 h-4 px-1 text-[10px]">
-                  {closedTradesCount}
-                </Badge>
-              )}
-            </Button>
-          </div>
-        )}
-
-        <div className="flex items-center gap-2">
-          {session && (
-            <span
-              data-testid="header-balance"
-              className="font-mono text-xs text-muted-foreground"
-              title="Live account balance"
-            >
-              ${balance.toLocaleString('en-US', { maximumFractionDigits: 2 })}
-            </span>
           )}
-          <Button onClick={openModal} size="sm">
-            <Plus data-icon="inline-start" />
-            New Session
-          </Button>
         </div>
       </header>
 
@@ -182,18 +180,6 @@ export default function App(): React.JSX.Element {
                 activeView === 'chart' ? 'visible z-10' : 'invisible pointer-events-none -z-10'
               }`}
             >
-              {/* Session info strip (shown when the header chip is too small) */}
-              <div className="flex items-center gap-4 border-b border-border/60 px-5 py-1.5 text-[11px] text-muted-foreground sm:hidden">
-                <span className="font-semibold text-foreground">{session.name}</span>
-                <span>{session.asset.label}</span>
-                <span className="uppercase">{session.timeframe}</span>
-                <span>
-                  {session.startDate} → {session.endDate}
-                </span>
-                <span className="font-mono">
-                  ${balance.toLocaleString('en-US', { maximumFractionDigits: 2 })}
-                </span>
-              </div>
               <div className="relative flex-1">
                 {/* Keyed per session: each session gets a fresh workspace + provider. */}
                 <VelaChart
