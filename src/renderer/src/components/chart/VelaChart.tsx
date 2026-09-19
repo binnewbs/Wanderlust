@@ -10,6 +10,8 @@ import {
   sessionTicker
 } from './sessionProvider'
 import { timeframeMs, velaTimeframe, VELA_TIMEFRAMES } from './vela'
+import { rendererOf, velaChartRef, type PriceRange, type ScaleHolderBridge } from './chartBridge'
+import OrderLevelsOverlay from './OrderLevelsOverlay'
 
 /**
  * Right-side margin (in bars) the playback view keeps past the newest revealed
@@ -17,71 +19,6 @@ import { timeframeMs, velaTimeframe, VELA_TIMEFRAMES } from './vela'
  * the newest candle is glued flush against the right screen edge.
  */
 const FOLLOW_RIGHT_OFFSET = 6
-
-/**
- * Minimal structural view of the Vela renderer bits we bridge. The public
- * `chart.getVisibleRange()` clamps to the loaded data, so it cannot see the
- * right-side whitespace a pinned view carries (the margin, or how far the user
- * panned) — and Vela's reload path (`reframeKeepZoom` inside `setBars`) resets
- * every pane's manual PRICE scale. Reading the renderer's coords/panes directly
- * lets the playback push preserve both, without touching any Vela internals.
- */
-interface PriceRange {
-  min: number
-  max: number
-}
-interface CoordsBridge {
-  barCount: number
-  widthPx: number
-  visibleLogicalRange(): { from: number; to: number } | null
-  logicalToTime(logical: number): number
-}
-interface ScaleHolderBridge {
-  manualScale: PriceRange | null
-  scale: PriceRange
-}
-interface RendererBridge {
-  coords: CoordsBridge
-  scene: {
-    panes: Map<string, ScaleHolderBridge>
-    indicatorScales?: Map<string, ScaleHolderBridge>
-  }
-  setManualScale(holder: ScaleHolderBridge, scale: PriceRange): void
-}
-
-function hasScene(r: unknown): r is RendererBridge {
-  return (
-    typeof r === 'object' &&
-    r !== null &&
-    'scene' in r &&
-    'coords' in r &&
-    typeof (r as { setManualScale?: unknown }).setManualScale === 'function'
-  )
-}
-
-/**
- * Resolve the NATIVE renderer from the chart shell. `chart.renderer` is a
- * getter that returns Vela's RendererControl FACADE, not the renderer that owns
- * `scene`/`coords` — the native instance lives one hop deeper
- * (`rendererControl.renderer`, or `orchestrator.renderer` on some builds).
- * Instead of guessing the exact wrapper shape, pick the first candidate that
- * actually has `scene` + `coords` + `setManualScale`.
- */
-function rendererOf(chart: unknown): RendererBridge | null {
-  const anyChart = chart as {
-    renderer?: unknown
-    rendererControl?: { renderer?: unknown }
-    orchestrator?: { renderer?: unknown }
-  } | null
-  if (!anyChart) return null
-  const candidates = [
-    anyChart.rendererControl?.renderer,
-    anyChart.renderer,
-    anyChart.orchestrator?.renderer
-  ]
-  for (const c of candidates) if (hasScene(c)) return c
-  return null
-}
 
 /** The panes/scales the user has manually framed (drag on the price axis). */
 function collectManualScales(chart: unknown): Map<ScaleHolderBridge, PriceRange> {
@@ -176,6 +113,9 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
 
     const workspace = new VelaWorkspace(el, options)
     const chart = workspace.chart
+    // Publish the live chart shell for the OrderLevelsOverlay sibling — it
+    // re-resolves the native renderer from this ref on every animation frame.
+    velaChartRef.current = chart
 
     // --- Vela position drawing → store selection (Phase 5) ---
     // A Long/Short Position tool keeps its levels as anchors [entry, stop,
@@ -389,9 +329,17 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
       unsubMarket()
       if (w.__wanderlust) delete w.__wanderlust
       useSessionStore.getState().setSelectedDrawing(null)
+      velaChartRef.current = null
       workspace.destroy()
     }
   }, [symbol, timeframe])
 
-  return <div ref={containerRef} className="h-full w-full" />
+  return (
+    <div className="relative h-full w-full overflow-hidden">
+      <div ref={containerRef} className="h-full w-full" data-testid="vela-container" />
+      {/* Safe overlay: repositions TP/SL strips above the canvas via the
+          native coords bridge (see OrderLevelsOverlay). Never touches Vela. */}
+      <OrderLevelsOverlay />
+    </div>
+  )
 }

@@ -13,6 +13,7 @@ import {
   nextOrderId,
   type NewOrderInput,
   type Order,
+  type OrderLevel,
   type PositionSelection
 } from './trading'
 
@@ -94,6 +95,9 @@ export interface SessionState {
   lastOrderResult: { ok: boolean; message: string } | null
   /** Submit a New Order; it fills/evals from the CURRENT playback candle on. */
   submitOrder: (input: NewOrderInput) => void
+  /** Live-drag a pending/filled order's SL or TP level (OrderLevelsOverlay).
+   *  Closed orders are read-only; the write is a pure guarded map. */
+  updateOrderLevel: (orderId: string, level: OrderLevel, price: number) => void
   setRiskPercent: (pct: number) => void
   /** The chart pushes the currently selected position drawing here (or null). */
   setSelectedDrawing: (selection: PositionSelection | null) => void
@@ -330,6 +334,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     })
   },
   setRiskPercent: (pct) => set({ riskPercent: Math.min(100, Math.max(0, pct)) }),
+  /** Reprice an order's stop-loss/take-profit by live drag on the chart's
+   *  horizontal level strips (Phase 6 — OrderLevelsOverlay). Pending/running
+   *  orders reprice; closed orders are read-only. Pure map; never throws. */
+  updateOrderLevel: (orderId, level, price) =>
+    set((s) => {
+      if (!Number.isFinite(price) || price <= 0) return s
+      const next = s.orders.map((o) => {
+        if (o.id !== orderId || o.status === 'closed') return o
+        if (level === 'stopLoss' && o.stopLoss === price) return o
+        if (level === 'takeProfit' && o.takeProfit === price) return o
+        return level === 'stopLoss' ? { ...o, stopLoss: price } : { ...o, takeProfit: price }
+      })
+      return { orders: next }
+    }),
+
   setSelectedDrawing: (selection) =>
     set((s) => {
       if (selection?.drawingId === s.selectedDrawing?.drawingId) return s

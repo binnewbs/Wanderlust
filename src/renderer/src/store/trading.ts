@@ -17,6 +17,10 @@ export type OrderType = 'market' | 'limit' | 'stop'
 export type TradeDirection = 'long' | 'short'
 export type OrderStatus = 'pending' | 'filled' | 'closed'
 export type ExitReason = 'take_profit' | 'stop_loss'
+/** Horizontally draggable strip levels on pending/running orders
+ *  (OrderLevelsOverlay): the red stop-loss strip and the green take-profit
+ *  strip. Entry strips are display-only. */
+export type OrderLevel = 'stopLoss' | 'takeProfit'
 
 /** One simulated order in the active session (pending, filled, or closed). */
 export interface Order {

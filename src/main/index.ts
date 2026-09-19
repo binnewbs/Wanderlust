@@ -847,6 +847,237 @@ function createWindow(): void {
         await shot('/tmp/opencode/wanderlust-8-freeview.png')
         note('ui7', ui7)
 
+        // ---- 4h. Phase 6: OrderLevelsOverlay — draggable TP/SL strips. The
+        // chart must render one overlay strip per level (entry/SL/TP) for the
+        // pending order, positioned through the native coords bridge, and a
+        // pointer drag on the SL strip must reprice that order's stopLoss via
+        // yToPrice → updateOrderLevel (label reflects the new price). The
+        // order is submitted at the CURRENT parked index so it stays pending
+        // (a market order only fills on the NEXT reveal).
+        const ui8 = await js(`(async () => {
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          const q = (s) => document.querySelector(s);
+          const qa = (s) => [...document.querySelectorAll(s)];
+          const text = (s) => q(s)?.textContent?.trim() ?? null;
+          const click = (s) => { const el = q(s); if (!el) return false; el.click(); return true; };
+          const fail = (step, extra = {}) => ({ ok: false, step, ...extra });
+          const wl = window.__wanderlust;
+          if (!wl) return fail('no-e2e-handle');
+          const cur = Number((text('[data-testid="playback-index"]') ?? '').trim());
+          if (!Number.isFinite(cur)) return fail('no-index', { idx: text('[data-testid="playback-index"]') });
+          const res = await window.api.getCachedData({
+            symbol: 'eurusd', timeframe: 'm1', startDate: '2026-09-01', endDate: '2026-09-02'
+          });
+          const candles = res.candles ?? [];
+          const cE = candles[cur];
+          if (!cE) return fail('no-candle', { cur });
+          // Place a fresh pending order exactly like the toolbar would.
+          const did = wl.addPosition({ entry: cE.close, stop: cE.low - 0.002, target: cE.high, time: cE.timestamp });
+          if (!did) return fail('place');
+          wl.chart.drawings.select(did);
+          await sleep(150);
+          if (!text('[data-testid="selected-position"]')) return fail('no-chip');
+          if (!click('[data-testid="new-order-btn"]')) return fail('open-menu');
+          await sleep(300);
+          click('[data-testid="confirm-order"]');
+          await sleep(200); // order is now pending → overlay strips mount
+
+          // ui7 left a manual price frame (min 1.05/max 1.11) on the main pane,
+          // so levels around the candle (~1.16) sit ABOVE the visible scale.
+          // Reframe the main price pane around the traded candle so the strips
+          // land inside the pane — exactly what a real user's view would show.
+          const shell = wl.chart;
+          const renderer = [shell?.rendererControl?.renderer, shell?.renderer, shell?.orchestrator?.renderer]
+            .find((rr) => rr && rr.scene && rr.coords);
+          if (!renderer) return fail('no-renderer');
+          const pane = [...(renderer.scene?.panes?.values() ?? [])].find((p) => p.kind === 'price');
+          if (!pane) return fail('no-pane');
+          const pad = Math.max(0.005, (cE.high - cE.low) * 2);
+          renderer.setManualScale(pane, { min: cE.low - pad, max: cE.high + pad });
+          await sleep(400); // let the rendered frame + rAF placement settle
+
+          // Exactly one pending order was just created → exactly 3 level strips.
+          const entryEl = q('[data-testid="order-level-entry"]');
+          const slEl = q('[data-testid="order-level-stopLoss"]');
+          const tpEl = q('[data-testid="order-level-takeProfit"]');
+          const stripCount = qa('[data-testid="order-level-stopLoss"], [data-testid="order-level-takeProfit"], [data-testid="order-level-entry"]').length;
+          if (!entryEl || !slEl || !tpEl) return fail('no-strips', { count: stripCount });
+
+          // Strips must have been placed (opacity 1) and sit inside the chart
+          // container's vertical bounds. The wheel-zoom glide test below also
+          // needs the container element (Vela's zoom handler listens on it).
+          const placed = [entryEl, slEl, tpEl].every((el) => getComputedStyle(el).opacity === '1');
+          const rootRect = entryEl.parentElement.getBoundingClientRect();
+          const containerEl = q('[data-testid="vela-container"]');
+          const containerRect = containerEl?.getBoundingClientRect?.() ?? null;
+          const originDelta = containerRect ? Math.round(rootRect.top - containerRect.top) : null;
+          const rows = [entryEl, slEl, tpEl].map((el) => {
+            const rr = el.getBoundingClientRect();
+            return { top: Math.round(rr.top), inside: rr.top >= rootRect.top - 2 && rr.top + rr.height <= rootRect.bottom + 2 };
+          });
+          const insidePane = rows.every((r) => r.inside);
+
+          // --- Regression A: strips must sit EXACTLY on the price axis. Each
+          // strip's DOM Y (through the overlay's own origin) must equal the
+          // native coords.priceToY(price, pane.scale, pane.bounds) — the exact
+          // math Vela paints candles with — ±1.5px. A stray container offset
+          // or a wrong scale/bounds read would show up here.
+          const STRIP_HALF = 6;
+          const levelPrices = [
+            ['entry', cE.close],
+            ['stopLoss', cE.low - 0.002],
+            ['takeProfit', cE.high]
+          ];
+          const exactDeltas = [];
+          for (const [kind, price] of levelPrices) {
+            const el = q('[data-testid="order-level-' + kind + '"]');
+            if (!el) return fail('no-strip-' + kind);
+            const expTop = renderer.coords.priceToY(price, pane.scale, pane.bounds) - STRIP_HALF;
+            const actTop = el.getBoundingClientRect().top - rootRect.top;
+            exactDeltas.push({ kind, exp: Math.round(expTop), act: Math.round(actTop), d: Math.round((actTop - expTop) * 10) / 10 });
+          }
+          const exact = exactDeltas.every((d) => Math.abs(d.d) <= 1.5);
+
+          // --- Regression B: strips must stay GLUED to the price axis through
+          // an ANIMATED wheel zoom (the user's worm-wheel glide). Drop the
+          // manual frame so the pane autoscales, then wheel-zoom in the DATA
+          // region (Vela's animated zoomTo path: barSpacing eases and autoscale
+          // re-glides the price scale every frame). Sample the strips mid-flight
+          // every ~25ms and require each to equal priceToY at THAT instant — a
+          // one-frame lag (the old rAF-only placement read scales BEFORE Vela
+          // painted) shows up as a mismatch while the scale is moving.
+          pane.manualScale = null; // resume autoscale for the glide
+          const scalePre = { min: pane.scale.min, max: pane.scale.max };
+          // Vela's wheel handler binds to the DATA CANVAS (input.attach(dataCanvas)),
+          // not the container div — dispatch there so the animated zoomTo path runs.
+          const dataCanvas = renderer.dataCanvas?.tagName === 'CANVAS' ? renderer.dataCanvas : null;
+          const wheelTarget = dataCanvas ?? containerEl ?? null;
+          const cRect = dataCanvas ? dataCanvas.getBoundingClientRect() : (containerRect ?? rootRect);
+          const wx = cRect.left + Math.max(120, cRect.width * 0.3);
+          const wy = cRect.top + cRect.height / 2;
+          const wheelAt = (dy) => {
+            wheelTarget?.dispatchEvent(new WheelEvent('wheel', {
+              deltaY: dy, deltaX: 0, clientX: wx, clientY: wy, bubbles: true, cancelable: true
+            }));
+          };
+          wheelAt(-620);
+          await sleep(60);
+          wheelAt(-620);
+          // Diagnostic: does the native post-paint viewport hook fire at all
+          // during the glide? The overlay's glue depends on it.
+          let vpFired = 0;
+          const vpType = typeof renderer.onViewportChange;
+          let vpUnsub = null;
+          if (vpType === 'function') {
+            try { vpUnsub = renderer.onViewportChange(() => { vpFired++; }) ?? null; } catch { vpUnsub = null; }
+          }
+          const samples = [];
+          const keyPane = renderer.scene?.panes?.get('price');
+          const keyPaneSame = keyPane === pane;
+          const slCount = qa('[data-testid="order-level-stopLoss"]').length;
+          const slPrice = cE.low - 0.002;
+          for (let i = 0; i < 16; i++) {
+            await sleep(25);
+            const vp = renderer.coords.getViewport();
+            const kp = renderer.scene?.panes?.get('price');
+            const s = [];
+            for (const [kind, price] of levelPrices) {
+              const el = q('[data-testid="order-level-' + kind + '"]');
+              if (!el) { s.push({ kind, miss: true }); continue; }
+              const expTop = renderer.coords.priceToY(price, pane.scale, pane.bounds) - STRIP_HALF;
+              const actTop = el.getBoundingClientRect().top - rootRect.top;
+              s.push({ kind, d: Math.round((actTop - expTop) * 10) / 10 });
+            }
+            const pY = renderer.coords.priceToY(slPrice, pane.scale, pane.bounds);
+            samples.push({
+              bs: Math.round(vp.barSpacing * 100) / 100,
+              min: pane.scale.min, max: pane.scale.max,
+              logg: pane.scale.log ?? null,
+              bTop: pane.bounds.top, bH: pane.bounds.height,
+              pY, pYf: Number.isFinite(pY),
+              kpMin: kp?.scale?.min, kpMax: kp?.scale?.max,
+              vpCbsSize0: i === 0 ? (renderer.viewportCbs?.size ?? null) : undefined,
+              s
+            });
+          }
+          const s0 = samples[0];
+          const sawGlide = samples.some((x, i) => i > 0 && Math.abs(x.bs - s0.bs) > 0.001);
+          const sawScaleChange = samples.some((x, i) => i > 0 && (x.min !== s0.min || x.max !== s0.max));
+          const glued = samples.every((x) => x.s.every((d) => !d.miss && Math.abs(d.d) <= 1.5));
+          const missSamples = samples
+            .map((x, i) => ({
+              i,
+              bs: x.bs,
+              pYf: x.pYf,
+              pY: Math.round(x.pY * 10) / 10,
+              logg: x.logg,
+              bTop: x.bTop,
+              bH: x.bH,
+              kpMin: x.kpMin,
+              kpMax: x.kpMax,
+              vpCbsSize0: x.vpCbsSize0,
+              s: x.s
+            }))
+            .filter((x) => x.s.some((d) => d.miss || Math.abs(d.d) > 1.5))
+            .slice(0, 6);
+          vpUnsub?.();
+          const vpCbsSize = renderer.viewportCbs?.size ?? null;
+          await sleep(450); // let the glide settle fully
+
+          // After the zoom settles the strips must STILL match the axis (no
+          // residual drift) and their prices must be unchanged (zooming moves
+          // no levels — only their on-screen Y).
+          const settledDeltas = [];
+          for (const [kind, price] of levelPrices) {
+            const el = q('[data-testid="order-level-' + kind + '"]');
+            if (!el) return fail('no-strip-settled-' + kind);
+            const expTop = renderer.coords.priceToY(price, pane.scale, pane.bounds) - STRIP_HALF;
+            const actTop = el.getBoundingClientRect().top - rootRect.top;
+            settledDeltas.push({ kind, d: Math.round((actTop - expTop) * 10) / 10 });
+          }
+          const settledExact = settledDeltas.every((d) => Math.abs(d.d) <= 1.5);
+          const priceLabel = (kind) => q('[data-testid="order-level-' + kind + '-price"]')?.textContent?.trim() ?? null;
+          const labelsBefore = levelPrices.map(([kind]) => kind + ':' + priceLabel(kind));
+          await sleep(30);
+          const labelsAfter = levelPrices.map(([kind]) => kind + ':' + priceLabel(kind));
+          const pricesStable = labelsAfter.every((lab) => labelsBefore.includes(lab));
+          const scaleChanged = Math.abs(pane.scale.min - scalePre.min) > 0 || Math.abs(pane.scale.max - scalePre.max) > 0;
+
+          // --- Drag the SL strip ~30px down; the store must reprice the order.
+          const priceEl = q('[data-testid="order-level-stopLoss-price"]');
+          const before = priceEl?.textContent?.trim() ?? null;
+          const r = slEl.getBoundingClientRect();
+          const cx = r.left + r.width / 2;
+          const y0 = r.top + r.height / 2;
+          slEl.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 1, clientX: cx, clientY: y0, button: 0 }));
+          slEl.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, pointerId: 1, clientX: cx, clientY: y0 + 30, button: 0 }));
+          slEl.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerId: 1, clientX: cx, clientY: y0 + 30, button: 0 }));
+          await sleep(250);
+          const after = q('[data-testid="order-level-stopLoss-price"]')?.textContent?.trim() ?? null;
+          const changed = before != null && after != null && before !== after;
+          const rawLevels = window.__wanderlustLevels ?? null;
+          const rendererSame = !!rawLevels && rawLevels.rendererObj === renderer;
+          const finalScaleSame = !!rawLevels && rawLevels.paneScaleMin === pane.scale.min && rawLevels.paneScaleMax === pane.scale.max;
+          const dbgLevels = rawLevels ? { ...rawLevels } : null;
+          if (dbgLevels) delete dbgLevels.rendererObj;
+
+          return {
+            ok: placed && insidePane && stripCount === 3 && exact && glued && settledExact && pricesStable && changed,
+            step: 'final',
+            cur, stripCount, placed, insidePane, originDelta,
+            wheelOn: dataCanvas ? 'canvas' : containerEl ? 'container' : 'none',
+            vpType, vpFired, vpCbsSize, dbgLevels, rendererSame, finalScaleSame,
+            keyPaneSame, slCount,
+            exact, exactDeltas,
+            sawGlide, sawScaleChange, scaleChanged, glued, missSamples,
+            settledExact, settledDeltas, pricesStable,
+            before, after, changed,
+            rows: rows.map((r2) => r2.top)
+          };
+        })()`)
+        await shot('/tmp/opencode/wanderlust-9-overlay.png')
+        note('ui8', ui8)
+
         console.log('[e2e] shell      =', JSON.stringify(shellDom))
         console.log('[e2e] download#1 =', JSON.stringify(download1))
         console.log(
@@ -864,10 +1095,11 @@ function createWindow(): void {
         console.log('[e2e] ui5 viewpt =', JSON.stringify(ui5))
         console.log('[e2e] ui6 playv  =', JSON.stringify(ui6))
         console.log('[e2e] ui7 freev =', JSON.stringify(ui7))
+        console.log('[e2e] ui8 overlay =', JSON.stringify(ui8))
         console.log('[e2e] console   =', JSON.stringify(consoleLogs.slice(-8)))
         console.log('[e2e] console-ui =', JSON.stringify(consoleLogs.slice(logsBefore).slice(0, 6)))
         console.log(
-          '[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport,7-playback-view,8-freeview}.png'
+          '[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport,7-playback-view,8-freeview,9-overlay}.png'
         )
       } catch (err) {
         console.error('[e2e] FAILED', err)
