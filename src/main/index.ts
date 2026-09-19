@@ -1273,6 +1273,206 @@ function createWindow(): void {
         await shot('/tmp/opencode/wanderlust-10-dragglue.png')
         note('ui9', ui9)
 
+        // ---- 4j. Regression for "the lines deviate from the Order's entry/tp/sl
+        // price" + "I want the visual lines to follow the actual price FROM the
+        // chart". Root cause: the strips were priced from static ORDER fields,
+        // which drift from the drawn tool (a market fill's entry uses the fill
+        // open, edits to the tool after submission never reach the order, and
+        // the menu's "SL/TP locked to the tool" promise ended at submission).
+        // ui10 replays the user's exact session — draw tool → New Order →
+        // playback fill → edit the tool's anchor → drag a strip — and asserts a
+        // CONSISTENT TRIANGLE at every step: tool anchors == order fields ==
+        // strip lines (px-exact), with the visual entry STAYING on the drawn
+        // entry through a market fill.
+        const ui10 = await js(`(async () => {
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          const q = (s) => document.querySelector(s);
+          const qa = (s) => [...document.querySelectorAll(s)];
+          const text = (s) => q(s)?.textContent?.trim() ?? null;
+          const click = (s) => { const el = q(s); if (!el) return false; el.click(); return true; };
+          const wl = window.__wanderlust;
+          if (!wl) return ({ ok: false, step: 'no-e2e-handle' });
+          const renderer = [wl.chart?.rendererControl?.renderer, wl.chart?.renderer, wl.chart?.orchestrator?.renderer]
+            .find((rr) => rr && rr.scene && rr.coords);
+          if (!renderer) return ({ ok: false, step: 'no-renderer' });
+          const pane = [...(renderer.scene?.panes?.values() ?? [])].find((p) => p.kind === 'price');
+          if (!pane) return ({ ok: false, step: 'no-pane' });
+          const root = q('[data-testid="order-level-stopLoss"]')?.parentElement ?? null;
+          if (!root) return ({ ok: false, step: 'no-root' });
+          const STRIP_HALF = 6;
+          const anchorsOf = (id) => {
+            const d = wl.chart.drawings.all().find((dd) => dd.id === id);
+            if (!d || !d.anchors || d.anchors.length < 3) return null;
+            return { entry: d.anchors[0].price, stop: d.anchors[1].price, target: d.anchors[2].price };
+          };
+          const specsOf = (orderId) => {
+            const lv = window.__wanderlustLevels?.specs ?? [];
+            return {
+              entry: lv.find((s) => s.orderId === orderId && s.level === 'entry')?.price ?? NaN,
+              stop: lv.find((s) => s.orderId === orderId && s.level === 'stopLoss')?.price ?? NaN,
+              target: lv.find((s) => s.orderId === orderId && s.level === 'takeProfit')?.price ?? NaN
+            };
+          };
+          const stripEl = (orderId, kind) => qa('[data-testid="order-level-' + kind + '"]').find((el) => el.dataset.orderId === orderId) ?? null;
+          const stripGap = (orderId, kind, price) => {
+            const el = stripEl(orderId, kind);
+            if (!el) return Infinity;
+            const expTop = renderer.coords.priceToY(price, pane.scale, pane.bounds) - STRIP_HALF;
+            const actTop = el.getBoundingClientRect().top - root.getBoundingClientRect().top;
+            return Math.round((actTop - expTop) * 10) / 10;
+          };
+          const labelOf = (orderId, kind) => stripEl(orderId, kind)?.querySelector('[data-testid="order-level-' + kind + '-price"]')?.textContent?.trim() ?? null;
+          const orderOf = (drawingId) => (wl.orders() ?? []).find((o) => o.drawingId === drawingId) ?? null;
+          const idxText = () => Number((text('[data-testid="playback-index"]') ?? '').trim());
+          const cur0 = idxText();
+          if (!Number.isFinite(cur0)) return ({ ok: false, step: 'no-index' });
+          const res = await window.api.getCachedData({ symbol: 'eurusd', timeframe: 'm1', startDate: '2026-09-01', endDate: '2026-09-02' });
+          const candles = res.candles ?? [];
+          const stepTo = async (n) => {
+            for (let i = 0; i < n * 4 + 10; i++) {
+              if (idxText() === n) return true;
+              if (!click('[data-testid="playback-step"]')) return false;
+              await sleep(60);
+            }
+            return idxText() === n;
+          };
+          // Advance so this test draws on a FRESH candle; on the way the ui8
+          // market order fills (exercising filled-state pricing too).
+          const cur = cur0 + 3;
+          if (!(await stepTo(cur))) return ({ ok: false, step: 'step', cur0, cur, now: idxText() });
+          const cE = candles[cur];
+          if (!cE) return ({ ok: false, step: 'no-candle', cur });
+          // Keep ui9's manual frame for phases A–D so every strip sits in view
+          // (wide SL/TP buffers below); autoscale is restored only at phase E.
+
+          // ── A. Draw the tool + MARKET New Order (the toolbar flow exactly) ──
+          // Wide SL/TP buffers: the order fills on candle cur (the first candle
+          // evaluated after submission) and is then watched on cur+1 — the
+          // levels must NOT be hit across those two candles or the order closes
+          // before we can assert its filled state.
+          const entryA = cE.close, stopA = cE.low - 0.02, targetA = cE.high + 0.02;
+          const did = wl.addPosition({ entry: entryA, stop: stopA, target: targetA, time: cE.timestamp });
+          if (!did) return ({ ok: false, step: 'place' });
+          wl.chart.drawings.select(did);
+          await sleep(150);
+          if (!text('[data-testid="selected-position"]')) return ({ ok: false, step: 'no-chip' });
+          click('[data-testid="new-order-btn"]');
+          await sleep(300);
+          click('[data-testid="confirm-order"]');
+          await sleep(250);
+          const orderA = orderOf(did);
+          if (!orderA) return ({ ok: false, step: 'no-order' });
+          const A = {
+            draw: anchorsOf(did), order: orderA, specs: specsOf(orderA.id),
+            gaps: { entry: stripGap(orderA.id, 'entry', entryA), stop: stripGap(orderA.id, 'stopLoss', stopA), target: stripGap(orderA.id, 'takeProfit', targetA) },
+            labels: { entry: labelOf(orderA.id, 'entry'), stop: labelOf(orderA.id, 'stopLoss'), target: labelOf(orderA.id, 'takeProfit') }
+          };
+          const Aok = !!A.draw && orderA.stopLoss === stopA && orderA.takeProfit === targetA
+            && A.specs.entry === entryA && A.specs.stop === stopA && A.specs.target === targetA
+            && Math.max(A.gaps.entry, A.gaps.stop, A.gaps.target) <= 1.5;
+
+          // ── B. FILL (2 candles; the market order enters at the open of
+          // candle cur — the first one evaluated after submission) ──
+          if (!(await stepTo(cur + 2))) return ({ ok: false, step: 'step-fill', now: idxText() });
+          await sleep(300);
+          const orderB = orderOf(did);
+          const targetFillOpen = candles[cur]?.open ?? NaN;
+          const B = {
+            order: orderB, specs: specsOf(orderB?.id ?? ''), targetFillOpen,
+            gaps: { entry: stripGap(orderB?.id ?? '', 'entry', entryA), stop: stripGap(orderB?.id ?? '', 'stopLoss', stopA), target: stripGap(orderB?.id ?? '', 'takeProfit', targetA) },
+            labelEntry: labelOf(orderB?.id ?? '', 'entry')
+          };
+          const Bok = !!orderB && orderB.status === 'filled'
+            && orderB.fillPrice === targetFillOpen
+            && B.specs.entry === entryA && B.specs.stop === stopA && B.specs.target === targetA
+            && B.gaps.entry <= 1.5 && B.gaps.stop <= 1.5 && B.gaps.target <= 1.5;
+
+          // ── C. Edit the TOOL's stop anchor → order AND strip must follow ──
+          const stop2 = Math.round((stopA - 0.001) * 1e6) / 1e6;
+          const aNow = anchorsOf(did);
+          wl.chart.drawings.update(did, { anchors: [
+            { time: cE.timestamp, price: aNow.entry },
+            { time: cE.timestamp, price: stop2 },
+            { time: cE.timestamp, price: aNow.target }
+          ] });
+          await sleep(350); // drawing:edited → syncOrderFromDrawing → strips re-resolve
+          const orderC = orderOf(did);
+          const C = {
+            draw: anchorsOf(did), order: orderC, specs: specsOf(orderC?.id ?? ''),
+            gapStop: stripGap(orderC?.id ?? '', 'stopLoss', stop2),
+            gapEntryUnchanged: stripGap(orderC?.id ?? '', 'entry', aNow.entry),
+            labelStop: labelOf(orderC?.id ?? '', 'stopLoss')
+          };
+          const Cok = !!orderC && !!C.draw && C.draw.stop === stop2 && orderC.stopLoss === stop2
+            && C.specs.stop === stop2 && C.specs.entry === aNow.entry
+            && C.gapStop <= 1.5 && C.gapEntryUnchanged <= 1.5;
+
+          // ── D. Strip-DRAG the SL line → BOTH order and tool anchor move ──
+          const slEl = stripEl(orderC?.id ?? '', 'stopLoss');
+          if (!slEl) return ({ ok: false, step: 'no-sl-d' });
+          const rD = slEl.getBoundingClientRect();
+          const cxD = rD.left + rD.width / 2;
+          const y0D = rD.top + rD.height / 2;
+          slEl.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 77, clientX: cxD, clientY: y0D, button: 0 }));
+          slEl.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, pointerId: 77, clientX: cxD, clientY: y0D + 24, button: 0 }));
+          await sleep(120);
+          slEl.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerId: 77, clientX: cxD, clientY: y0D + 24, button: 0 }));
+          await sleep(400);
+          const orderD = orderOf(did);
+          const drawD = anchorsOf(did);
+          const rootTop = root.getBoundingClientRect().top;
+          const yD = Math.min(pane.bounds.top + pane.bounds.height, Math.max(pane.bounds.top, y0D + 24 - rootTop));
+          const expectedStopD = renderer.coords.yToPrice(yD, pane.scale, pane.bounds);
+          const D = {
+            order: orderD, draw: drawD, specs: specsOf(orderD?.id ?? ''), expectedStop: expectedStopD,
+            orderVsDraw: Math.abs((orderD?.stopLoss ?? NaN) - (drawD?.stop ?? NaN)) < 1e-9,
+            gapStop: stripGap(orderD?.id ?? '', 'stopLoss', drawD?.stop ?? NaN),
+            labelStop: labelOf(orderD?.id ?? '', 'stopLoss')
+          };
+          const Dok = !!orderD && !!drawD && D.orderVsDraw
+            && D.gapStop <= 1.5
+            && Math.abs((orderD?.stopLoss ?? NaN) - expectedStopD) < 0.0002;
+
+          // ── E. Still pixel-glued through an animated wheel-zoom ──
+          pane.manualScale = null;
+          await sleep(150);
+          const dataCanvas = renderer.dataCanvas?.tagName === 'CANVAS' ? renderer.dataCanvas : null;
+          const cRectE = dataCanvas ? dataCanvas.getBoundingClientRect() : null;
+          const wheelAt = (dy) => {
+            dataCanvas?.dispatchEvent(new WheelEvent('wheel', {
+              deltaY: dy, deltaX: 0,
+              clientX: (cRectE?.left ?? 0) + Math.max(120, (cRectE?.width ?? 0) * 0.3),
+              clientY: (cRectE?.top ?? 0) + (cRectE?.height ?? 0) / 2,
+              bubbles: true, cancelable: true
+            }));
+          };
+          wheelAt(-560);
+          const Eglues = [];
+          for (let i = 0; i < 8; i++) {
+            await sleep(25);
+            Eglues.push(Math.max(
+              stripGap(orderD?.id ?? '', 'entry', aNow.entry),
+              stripGap(orderD?.id ?? '', 'stopLoss', drawD?.stop ?? NaN),
+              stripGap(orderD?.id ?? '', 'takeProfit', aNow.target)
+            ));
+          }
+          await sleep(350);
+          const Eok = Eglues.every((g) => g <= 1.5);
+          const ok = Aok && Bok && Cok && Dok && Eok;
+          const rawLevels = window.__wanderlustLevels ?? null;
+          const dbg = rawLevels ? { ...rawLevels } : null;
+          if (dbg) { delete dbg.rendererObj; delete dbg.ySnap; delete dbg.specs; }
+          return {
+            ok, step: 'final', cur, cur0,
+            A, Aok, B: { status: B?.order?.status ?? null, fillPrice: B?.order?.fillPrice ?? null, targetFillOpen: B.targetFillOpen, specs: B.specs, gaps: B.gaps, labelEntry: B.labelEntry }, Bok,
+            C, Cok, D, Dok,
+            E: { ok: Eok, maxGap: Math.max(...Eglues), glues: Eglues.slice(0, 4) },
+            dbg
+          };
+        })()`)
+        await shot('/tmp/opencode/wanderlust-11-anchors.png')
+        note('ui10', ui10)
+
         console.log('[e2e] shell      =', JSON.stringify(shellDom))
         console.log('[e2e] download#1 =', JSON.stringify(download1))
         console.log(
@@ -1295,7 +1495,7 @@ function createWindow(): void {
         console.log('[e2e] console   =', JSON.stringify(consoleLogs.slice(-8)))
         console.log('[e2e] console-ui =', JSON.stringify(consoleLogs.slice(logsBefore).slice(0, 6)))
         console.log(
-          '[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport,7-playback-view,8-freeview,9-overlay,10-dragglue}.png'
+          '[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport,7-playback-view,8-freeview,9-overlay,10-dragglue,11-anchors}.png'
         )
       } catch (err) {
         console.error('[e2e] FAILED', err)

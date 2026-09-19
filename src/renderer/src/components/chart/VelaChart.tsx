@@ -163,6 +163,19 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
       useSessionStore.getState().setSelectedDrawing(found)
     }
     const onEdited = (e: { id: string }): void => {
+      // The menu promises "SL/TP locked to the tool" — moving the drawing's
+      // anchors after submission repricies every order linked to it, so the
+      // order behaves like the lines on the chart AND the visual lines keep
+      // matching the tool (playback and display agree).
+      const drawing = chart.drawings.all().find((d) => d.id === e.id)
+      const selection = drawing ? positionSelection(drawing) : null
+      if (selection) {
+        useSessionStore.getState().syncOrderFromDrawing(e.id, {
+          entry: selection.entryPrice,
+          stop: selection.stopLoss,
+          target: selection.takeProfit
+        })
+      }
       if (useSessionStore.getState().selectedDrawing?.drawingId !== e.id) return
       useSessionStore.getState().setSelectedDrawing(selectionById(e.id))
     }
@@ -304,6 +317,23 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
     if (`${window.location.hash}`.includes('e2e')) {
       w.__wanderlust = {
         chart,
+        orders: (): Array<Record<string, unknown>> => {
+          try {
+            return useSessionStore.getState().orders.map((o) => ({
+              id: o.id,
+              drawingId: o.drawingId ?? null,
+              status: o.status,
+              orderType: o.orderType,
+              direction: o.direction,
+              orderPrice: o.orderPrice,
+              stopLoss: o.stopLoss,
+              takeProfit: o.takeProfit,
+              fillPrice: o.fillPrice ?? null
+            }))
+          } catch {
+            return []
+          }
+        },
         addPosition: (levels: {
           entry: number
           stop: number

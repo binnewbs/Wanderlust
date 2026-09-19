@@ -1,13 +1,16 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useReducer, useRef } from 'react'
 import { useSessionStore } from '@/store/session'
 import {
   PRICE_PANE_ID,
   onRendererCanvasGesture,
   onRendererViewport,
+  positionAnchorsOf,
   rendererOf,
+  setPositionAnchorPrice,
   velaChartRef,
   type CoordsBridge,
   type PaneBounds,
+  type PositionAnchors,
   type PriceRange,
   type RendererBridge
 } from './chartBridge'
@@ -21,6 +24,15 @@ import {
  *   - entry   — gray, display-only
  *   - stop    — red, draggable   → reprices the order's stopLoss live
  *   - target  — green, draggable → reprices the order's takeProfit live
+ *
+ * PRICE SOURCE: an order created FROM a Long/Short Position drawing carries
+ * `drawingId`, and its strips are priced from the drawing's LIVE anchors
+ * [entry, stop, target] — the "actual tp/sl/entry price from the chart".
+ * Moving the tool moves the lines (drawing:edited re-resolves them), dragging
+ * a strip reprices BOTH the order and the tool's anchor, and a market fill
+ * never yanks the entry line off the tool (it stays on the drawn entry).
+ * Manual orders (no drawing) fall back to the stored fields
+ * (entry = fillPrice ?? orderPrice).
  *
  * Placement is driven by THREE synchronized sources, so the strips are glued to
  * the price axis through EVERY repaint path (not just eased ones):
@@ -48,9 +60,18 @@ import {
 
 type LevelKind = 'entry' | 'stopLoss' | 'takeProfit'
 
+/** Drawing lifecycle events that can move a position tool's anchors. */
+const DRAWING_EVENTS = [
+  'drawing:created',
+  'drawing:edited',
+  'drawing:removed',
+  'drawing:selected'
+] as const
+
 interface StripSpec {
   key: string
   orderId: string
+  drawingId?: string | null
   level: LevelKind
   price: number
 }
@@ -73,6 +94,11 @@ const STRIP_STYLES: Record<LevelKind, { line: string; label: string }> = {
 export default function OrderLevelsOverlay(): React.JSX.Element {
   const orders = useSessionStore((s) => s.orders)
   const session = useSessionStore((s) => s.session)
+  // Bumped on Vela drawing create/edit/remove/select events (and chart swaps)
+  // so the strip list re-resolves LIVE tool anchors — moving the Long/Short
+  // Position tool moves the lines, exactly as the user asked ("the visual lines
+  // must follow the actual tp/sl/entry price from the chart").
+  const [drawTick, rerender] = useReducer((c: number) => c + 1, 0)
 
   const rootRef = useRef<HTMLDivElement>(null)
   const stripEls = useRef(new Map<string, HTMLDivElement>())
@@ -85,35 +111,39 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
   // Build the strip list from the CURRENT orders and mirror it into a ref the
   // rAF loop can read without re-subscribing to every pointer move. Memoizing
   // keeps the array identity stable between order/session changes.
+  //
+  // PRICE SOURCE — an order created FROM a drawing carries `drawingId`, and its
+  // strips show the drawing's LIVE anchors [entry, stop, target] (re-resolved
+  // on every drawing event). That is the "actual price from the chart": after a
+  // market fill the entry line stays ON the tool's entry (it doesn't jump to
+  // the fill's open), and editing the tool moves the lines. Manual orders (no
+  // drawing) fall back to the stored order fields — entry = fillPrice ?? orderPrice.
   const strips = useMemo((): StripSpec[] => {
+    void drawTick // drawing events re-run this memo to re-resolve live anchors
     const out: StripSpec[] = []
     if (!session) return out
+    const pushLevel = (o, level: LevelKind, price: number, drawingId?: string | null): void => {
+      if (!Number.isFinite(price) || price <= 0) return
+      out.push({ key: `${o.id}:${level}`, orderId: o.id, drawingId, level, price })
+    }
     for (const o of orders) {
       if (o.symbol !== session.asset.id) continue
       if (o.status !== 'pending' && o.status !== 'filled') continue
-      const entry = o.fillPrice ?? o.orderPrice
-      if (Number.isFinite(entry) && entry > 0) {
-        out.push({ key: `${o.id}:entry`, orderId: o.id, level: 'entry', price: entry })
-      }
-      if (Number.isFinite(o.stopLoss) && o.stopLoss > 0) {
-        out.push({
-          key: `${o.id}:stopLoss`,
-          orderId: o.id,
-          level: 'stopLoss',
-          price: o.stopLoss
-        })
-      }
-      if (Number.isFinite(o.takeProfit) && o.takeProfit > 0) {
-        out.push({
-          key: `${o.id}:takeProfit`,
-          orderId: o.id,
-          level: 'takeProfit',
-          price: o.takeProfit
-        })
+      const anchors: PositionAnchors | null = o.drawingId
+        ? positionAnchorsOf(velaChartRef.current, o.drawingId)
+        : null
+      if (anchors) {
+        pushLevel(o, 'entry', anchors.entry, o.drawingId)
+        pushLevel(o, 'stopLoss', anchors.stop, o.drawingId)
+        pushLevel(o, 'takeProfit', anchors.target, o.drawingId)
+      } else {
+        pushLevel(o, 'entry', o.fillPrice ?? o.orderPrice, o.drawingId)
+        pushLevel(o, 'stopLoss', o.stopLoss, o.drawingId)
+        pushLevel(o, 'takeProfit', o.takeProfit, o.drawingId)
       }
     }
     return out
-  }, [orders, session])
+  }, [orders, session, drawTick])
   useEffect(() => {
     stripsRef.current = strips
   }, [strips])
@@ -137,7 +167,9 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
     let raf = 0
     let unsubViewport: (() => void) | null = null
     let unsubCanvas: (() => void) | null = null
+    let unsubDrawings: (() => void) | null = null
     let attachedRenderer: RendererBridge | null = null
+    let attachedChart: unknown = null
     let attachedCanvas: { addEventListener(type: string, fn: (e: Event) => void): unknown } | null =
       null
     const placeRef: { current: (() => void) | null } = { current: null }
@@ -247,6 +279,51 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
             dbg.canvasAttach =
               typeof unsubCanvas === 'function' ? 'ok' : unsubCanvas === null ? 'none' : 'missing'
         }
+        // THE LIVE-ANCHOR SOURCE: re-subscribe to the chart's drawing events
+        // whenever the chart identity changes (VelaChart keys per session), so
+        // moving/creating/removing the Long/Short Position tool re-resolves the
+        // strip prices from the tool's CURRENT anchors the next render.
+        const chart = velaChartRef.current
+        if (attachedChart !== chart) {
+          unsubDrawings?.()
+          unsubDrawings = null
+          attachedChart = chart
+          const chartApi = chart as {
+            on?(event: string, fn: () => void): (() => void) | void
+          } | null
+          if (chartApi && typeof chartApi.on === 'function') {
+            const unsubs: Array<() => void> = []
+            for (const ev of DRAWING_EVENTS) {
+              try {
+                const un = chartApi.on(ev, () => {
+                  // Tool anchors changed → strips must follow. The dispatch is
+                  // stable across the component's life, safe inside rAF.
+                  rerender()
+                })
+                if (typeof un === 'function') unsubs.push(un)
+              } catch {
+                // keep the rest of the subscriptions — never throw
+              }
+            }
+            if (unsubs.length > 0) {
+              unsubDrawings = () => {
+                for (const un of unsubs) {
+                  try {
+                    un()
+                  } catch {
+                    // already torn down — ignore
+                  }
+                }
+              }
+            }
+          }
+          if (dbg)
+            dbg.drawAttach = unsubDrawings
+              ? typeof unsubDrawings === 'function'
+                ? 'ok'
+                : 'none'
+              : 'none'
+        }
         const pane = renderer.scene?.panes?.get(PRICE_PANE_ID)
         if (!pane) {
           if (dbg) dbg.eNoPane += 1
@@ -278,14 +355,14 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
           dbg.paneScaleMax = scale.max
           // True (unrounded) prices the strips are placed at — lets the E2E
           // compare against the exact stored price instead of the 5dp label.
-          const specs: { level: string; price: number }[] = []
-          for (const spec of stripsRef.current) {
-            const level = spec.level
-            if (!specs.some((s) => s.level === level)) {
-              specs.push({ level, price: spec.price })
-            }
-          }
-          dbg.specs = specs
+          // ALL specs (one per strip, incl. duplicates across orders), with the
+          // order + drawing ids, so multi-order sessions are unambiguous.
+          dbg.specs = stripsRef.current.map((spec) => ({
+            level: spec.level,
+            price: spec.price,
+            orderId: spec.orderId,
+            drawingId: spec.drawingId ?? null
+          }))
         }
         for (const spec of stripsRef.current) {
           const el = stripEls.current.get(spec.key)
@@ -334,6 +411,7 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
       cancelAnimationFrame(raf)
       unsubViewport?.()
       unsubCanvas?.()
+      unsubDrawings?.()
     }
   }, [])
 
@@ -372,6 +450,18 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
         const el = stripEls.current.get(spec.key)
         if (el) el.style.transform = `translateY(${y - STRIP_HALF}px)`
         useSessionStore.getState().updateOrderLevel(spec.orderId, spec.level, price)
+        // The strip shows the tool's anchor for linked orders — reprice the
+        // drawing's matching anchor too, so the canvas line follows the drag
+        // and the tool stays the source of truth (fires drawing:edited, which
+        // re-syncs the order idempotently).
+        if (spec.drawingId) {
+          setPositionAnchorPrice(
+            velaChartRef.current,
+            spec.drawingId,
+            spec.level === 'stopLoss' ? 1 : 2,
+            price
+          )
+        }
       }
     } catch {
       // ignore: keep the level where it was
@@ -398,6 +488,7 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
             key={spec.key}
             ref={setStripRef(spec.key)}
             data-testid={`order-level-${spec.level}`}
+            data-order-id={spec.orderId}
             className={`absolute left-0 right-0 opacity-0 ${
               draggable ? 'pointer-events-auto cursor-ns-resize' : ''
             }`}

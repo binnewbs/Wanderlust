@@ -98,6 +98,13 @@ export interface SessionState {
   /** Live-drag a pending/filled order's SL or TP level (OrderLevelsOverlay).
    *  Closed orders are read-only; the write is a pure guarded map. */
   updateOrderLevel: (orderId: string, level: OrderLevel, price: number) => void
+  /** Sync a linked order's levels from its chart drawing after the tool's
+   *  anchors move (VelaChart drawing:edited). Pending limit/stop orders also
+   *  take the new entry; filled/market keep their executed entry. */
+  syncOrderFromDrawing: (
+    drawingId: string,
+    anchors: { entry: number; stop: number; target: number }
+  ) => void
   setRiskPercent: (pct: number) => void
   /** The chart pushes the currently selected position drawing here (or null). */
   setSelectedDrawing: (selection: PositionSelection | null) => void
@@ -347,6 +354,45 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return level === 'stopLoss' ? { ...o, stopLoss: price } : { ...o, takeProfit: price }
       })
       return { orders: next }
+    }),
+
+  /** Live-sync linked orders from their chart drawing after the user moves the
+   *  tool's anchors (Phase 7). The New Order menu promises "SL/TP locked to the
+   *  tool" — this is what keeps that promise true AFTER submission: editing the
+   *  drawing repricies the order's stop-loss/take-profit (and a pending
+   *  limit/stop order's entry) so playback behaves like the lines on screen.
+   *  Filled trades keep their executed entry (`fillPrice`/`orderPrice`); market
+   *  entries are the next candle's open, not the drawn anchor. Pure + guarded:
+   *  returns the SAME state when nothing changed, so subscribers render only on
+   *  real reprices. */
+  syncOrderFromDrawing: (drawingId, anchors) =>
+    set((s) => {
+      const fin = (v: number): boolean => Number.isFinite(v) && v > 0
+      if (!drawingId || !fin(anchors.stop) || !fin(anchors.target)) return s
+      let changed = false
+      const next = s.orders.map((o) => {
+        if (o.drawingId !== drawingId || o.status === 'closed') return o
+        let n = o
+        if (anchors.stop !== o.stopLoss) {
+          n = { ...n, stopLoss: anchors.stop }
+          changed = true
+        }
+        if (anchors.target !== o.takeProfit) {
+          n = { ...n, takeProfit: anchors.target }
+          changed = true
+        }
+        if (
+          o.status === 'pending' &&
+          o.orderType !== 'market' &&
+          fin(anchors.entry) &&
+          anchors.entry !== o.orderPrice
+        ) {
+          n = { ...n, orderPrice: anchors.entry }
+          changed = true
+        }
+        return n
+      })
+      return changed ? { orders: next } : s
     }),
 
   setSelectedDrawing: (selection) =>

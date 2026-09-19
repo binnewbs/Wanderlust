@@ -163,6 +163,96 @@ export function onRendererCanvasGesture(
   }
 }
 
+/** The three live anchor prices of a Long/Short Position drawing. */
+export interface PositionAnchors {
+  entry: number
+  stop: number
+  target: number
+}
+
+/** Minimal view of the chart's drawings collection used by the bridges below. */
+interface DrawingsBridge {
+  all(): Array<{ id: string; anchors?: Array<{ time: number; price: number }> }>
+  update(id: string, patch: { anchors: Array<{ time: number; price: number }> }): unknown
+}
+
+function drawingsOf(chart: unknown): DrawingsBridge | null {
+  try {
+    if (typeof chart !== 'object' || chart === null) return null
+    const drawings = (chart as { drawings?: unknown }).drawings
+    if (!drawings || typeof (drawings as { all?: unknown }).all !== 'function') return null
+    return drawings as DrawingsBridge
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The LIVE anchor prices of a 'position' drawing (`chart.drawings`), or null
+ * when the drawing is gone / not a position tool / the chart is unreachable.
+ *
+ * This is the single source of truth the OrderLevelsOverlay renders against:
+ * an order created FROM a drawing keeps its strips glued to the tool's
+ * anchors — moving the tool moves the lines, and a re-run of playback cannot
+ * leave the visual lines behind the drawing. Bridge never throws.
+ */
+export function positionAnchorsOf(
+  chart: unknown,
+  drawingId: string | null | undefined
+): PositionAnchors | null {
+  const drawings = drawingsOf(chart)
+  if (!drawings || !drawingId) return null
+  try {
+    const d = drawings.all().find((x) => x.id === drawingId)
+    const anchors = d?.anchors
+    if (!d || !anchors || anchors.length < 3) return null
+    const [a, b, c] = anchors
+    if (
+      !a ||
+      !b ||
+      !c ||
+      !Number.isFinite(a.price) ||
+      !Number.isFinite(b.price) ||
+      !Number.isFinite(c.price) ||
+      a.price <= 0 ||
+      b.price <= 0 ||
+      c.price <= 0
+    )
+      return null
+    return { entry: a.price, stop: b.price, target: c.price }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Reprice ONE anchor of a linked position drawing (the strip-drag direction:
+ * dragging a SL/TP strip on the overlay also moves the tool's line on the
+ * canvas, so the chart, the order and the visual line all agree). index is the
+ * position-tool layout: 0 = entry, 1 = stop, 2 = target. Uses Vela's own
+ * `drawings.update`, so a real `drawing:edited` event fires. Returns whether an
+ * update was attempted. Bridge never throws.
+ */
+export function setPositionAnchorPrice(
+  chart: unknown,
+  drawingId: string | null | undefined,
+  index: 0 | 1 | 2,
+  price: number
+): boolean {
+  const drawings = drawingsOf(chart)
+  if (!drawings || !drawingId || !Number.isFinite(price) || price <= 0) return false
+  try {
+    const d = drawings.all().find((x) => x.id === drawingId)
+    const anchors = d?.anchors
+    if (!d || !anchors || anchors.length < 3) return false
+    const next = anchors.map((anchor, i) => (i === index ? { time: anchor.time, price } : anchor))
+    drawings.update(drawingId, { anchors: next })
+    return true
+  } catch {
+    return false
+  }
+}
+
 function hasScene(r: unknown): r is RendererBridge {
   return (
     typeof r === 'object' &&
