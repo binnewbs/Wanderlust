@@ -69,9 +69,9 @@ type JumpTarget = 'next_day' | 'new_york' | 'asia' | 'london'
 
 const JUMP_TARGETS: Array<{ value: JumpTarget; label: string }> = [
   { value: 'next_day', label: 'Next Day Open' },
-  { value: 'new_york', label: 'New York Open · 09:29 ET' },
-  { value: 'asia', label: 'Asian Open · 07:00 UTC+7' },
-  { value: 'london', label: 'London Open · 02:59 ET' }
+  { value: 'new_york', label: 'New York Open' },
+  { value: 'asia', label: 'Asian Open' },
+  { value: 'london', label: 'London Open' }
 ]
 
 interface DateParts {
