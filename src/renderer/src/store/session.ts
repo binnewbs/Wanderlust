@@ -10,7 +10,9 @@ import {
 } from '@shared/timeframes'
 import {
   evaluateOrders,
+  hasOpenPosition,
   nextOrderId,
+  restoreOrdersAt,
   sizeForRisk,
   type NewOrderInput,
   type Order,
@@ -89,10 +91,16 @@ export interface SessionState {
   /** Live account balance — starts at the session's starting balance and moves
    *  by realized pnl. */
   balance: number
+  /** The session's seed balance — the base `restoreOrdersAt` rewinds backward
+   *  moves to, so PnL from positions taken later in the timeline vanishes. */
+  startBalance: number
   /** Default risk per order (% of balance), seeded into the New Order menu. */
   riskPercent: number
   /** Every order submitted this session: pending → filled → closed. */
   orders: Order[]
+  /** When true the "positions will be gone" rewind-warning dialog stays quiet
+   *  for the rest of this session (set by its "don't show again" checkbox). */
+  rewindWarningDismissed: boolean
   /** The position drawing currently picked on the chart (feeds New Order). */
   selectedDrawing: PositionSelection | null
   /** Outcome of the last `submitOrder` call — shown under the New Order button. */
@@ -104,6 +112,11 @@ export interface SessionState {
   updateOrderLevel: (orderId: string, level: OrderLevel, price: number) => void
   /** Cancel a pending order, or close a filled position at the latest market close. */
   closeOrder: (orderId: string) => void
+  /** Close EVERY open position at the latest market close in one shot — the
+   *  "Close Now" path of the go-back dialog. */
+  flattenPositions: () => void
+  /** Suppress the rewind-warning dialog for the rest of this session. */
+  dismissRewindWarning: () => void
   setRiskPercent: (pct: number) => void
   /** The chart pushes the currently selected position drawing here (or null). */
   setSelectedDrawing: (selection: PositionSelection | null) => void
@@ -160,7 +173,7 @@ function isoAddDays(iso: string, days: number): string {
 }
 
 /** First index whose candle opens at or after `ts` (binary search, ascending). */
-function indexAtOrAfter(candles: Candle[], ts: number): number {
+export function indexAtOrAfter(candles: Candle[], ts: number): number {
   let lo = 0
   let hi = candles.length
   while (lo < hi) {
@@ -172,12 +185,18 @@ function indexAtOrAfter(candles: Candle[], ts: number): number {
 }
 
 /** Reveal index that adds/removes exactly one bar on the currently viewed timeframe. */
-function stepIndexForTimeframe(session: ActiveSession | null, currentIndex: number, tf: Timeframe, dir: 1 | -1): number {
+export function stepIndexForTimeframe(
+  session: ActiveSession | null,
+  currentIndex: number,
+  tf: Timeframe,
+  dir: 1 | -1
+): number {
   if (!session) return 0
   const base = sessionBaseCandles(session)
   const active = session.candlesByTimeframe[tf] ?? base
   const runUp = sessionBaseRunUp(session)
-  const cutoff = currentIndex > 0 ? base[currentIndex - 1]?.timestamp : runUp[runUp.length - 1]?.timestamp
+  const cutoff =
+    currentIndex > 0 ? base[currentIndex - 1]?.timestamp : runUp[runUp.length - 1]?.timestamp
   if (cutoff === undefined) return dir > 0 ? Math.min(1, base.length) : 0
   let visible = 0
   while (visible < active.length && active[visible].timestamp <= cutoff) visible += 1
@@ -199,8 +218,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   playing: false,
   speed: 30,
   balance: 0,
+  startBalance: 0,
   riskPercent: 1,
   orders: [],
+  rewindWarningDismissed: false,
   selectedDrawing: null,
   lastOrderResult: null,
 
@@ -210,16 +231,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   togglePlay: () =>
     set((s) => {
       const total = sessionBaseCandles(s.session).length
-      // At the end, play restarts the session from candle 0.
+      // At the end, play restarts the session from candle 0 — but never rewind
+      // while a position is still open (close it in the Trading panel first).
       if (!s.playing && s.currentIndex >= total) {
-        return { playing: true, currentIndex: 0 }
+        if (hasOpenPosition(s.orders)) return s
+        const rewound = restoreOrdersAt(s.orders, s.startBalance, 0)
+        return { playing: true, currentIndex: 0, orders: rewound.orders, balance: rewound.balance }
       }
       return { playing: !s.playing }
     }),
   pause: () => set({ playing: false }),
   // Forward index moves evaluate open/pending orders over the candles that
   // were just revealed (Phase 5): one candle on a tick, a whole range on a
-  // jump. Backward moves never touch the account.
+  // jump. Backward moves are gated while a position is open (you must close
+  // it first) and otherwise REWIND the account with restoreOrdersAt — realized
+  // PnL from trades taken later in the timeline is un-done, orders revert to
+  // their state at the destination index.
   advance: () =>
     set((s) => {
       const total = sessionBaseCandles(s.session).length
@@ -251,12 +278,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return { playing: false, currentIndex: nextIndex, orders: ev.orders, balance: ev.balance }
     }),
   stepBackward: () =>
-    set((s) => ({
-      playing: false,
-      currentIndex: stepIndexForTimeframe(s.session, s.currentIndex, s.playbackTimeframe, -1)
-    })),
+    set((s) => {
+      // No going backward inside a live position — close it first.
+      if (hasOpenPosition(s.orders)) return s
+      const nextIndex = stepIndexForTimeframe(s.session, s.currentIndex, s.playbackTimeframe, -1)
+      const rewound = restoreOrdersAt(s.orders, s.startBalance, nextIndex)
+      return {
+        playing: false,
+        currentIndex: nextIndex,
+        orders: rewound.orders,
+        balance: rewound.balance
+      }
+    }),
   setPlaybackTimeframe: (playbackTimeframe) => set({ playbackTimeframe }),
-  skipToStart: () => set({ playing: false, currentIndex: 0 }),
+  skipToStart: () =>
+    set((s) => {
+      if (hasOpenPosition(s.orders)) return s
+      const rewound = restoreOrdersAt(s.orders, s.startBalance, 0)
+      return { playing: false, currentIndex: 0, orders: rewound.orders, balance: rewound.balance }
+    }),
   skipToEnd: () =>
     set((s) => {
       const total = sessionBaseCandles(s.session).length
@@ -272,6 +312,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   goToTimestamp: (ts) =>
     set((s) => {
       const nextIndex = indexAtOrAfter(sessionBaseCandles(s.session), ts)
+      const goingBack = nextIndex < s.currentIndex
+      // A backward jump into a live position is refused: close it first.
+      if (goingBack && hasOpenPosition(s.orders)) return s
+      if (goingBack) {
+        const rewound = restoreOrdersAt(s.orders, s.startBalance, nextIndex)
+        return {
+          playing: false,
+          currentIndex: nextIndex,
+          orders: rewound.orders,
+          balance: rewound.balance
+        }
+      }
       const ev = evaluateOrders(
         s.orders,
         s.balance,
@@ -418,10 +470,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             ? runUp[runUp.length - 1]
             : undefined
       const exitPrice = candle?.close
-      if (exitPrice === undefined || !Number.isFinite(exitPrice) || exitPrice <= 0 || !candle) return s
+      if (exitPrice === undefined || !Number.isFinite(exitPrice) || exitPrice <= 0 || !candle)
+        return s
       const fillPrice = order?.fillPrice
-      if (!order || order.status !== 'filled' || fillPrice === undefined || !Number.isFinite(fillPrice)) return s
-      const pnl = (exitPrice - fillPrice) * (order.size ?? 0) * (order.direction === 'long' ? 1 : -1)
+      if (
+        !order ||
+        order.status !== 'filled' ||
+        fillPrice === undefined ||
+        !Number.isFinite(fillPrice)
+      )
+        return s
+      const pnl =
+        (exitPrice - fillPrice) * (order.size ?? 0) * (order.direction === 'long' ? 1 : -1)
       return {
         orders: s.orders.map((candidate) =>
           candidate.id === orderId
@@ -441,6 +501,50 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     }),
 
+  flattenPositions: () =>
+    set((s) => {
+      const base = sessionBaseCandles(s.session)
+      const runUp = sessionBaseRunUp(s.session)
+      const candle =
+        s.currentIndex > 0
+          ? base[s.currentIndex - 1]
+          : runUp.length > 0
+            ? runUp[runUp.length - 1]
+            : undefined
+      const exitPrice = candle?.close
+      if (!candle || exitPrice === undefined || !Number.isFinite(exitPrice) || exitPrice <= 0)
+        return s
+      let pnl = 0
+      let changed = false
+      const next = s.orders.map((order): Order => {
+        if (
+          order.status !== 'filled' ||
+          order.fillPrice === undefined ||
+          !Number.isFinite(order.fillPrice)
+        )
+          return order
+        changed = true
+        const p =
+          (exitPrice - order.fillPrice) * (order.size ?? 0) * (order.direction === 'long' ? 1 : -1)
+        pnl += p
+        return {
+          ...order,
+          status: 'closed',
+          exitPrice,
+          pnl: p,
+          exitReason: 'manual',
+          closedAtTime: candle.timestamp,
+          closedAtIndex: Math.max(0, s.currentIndex - 1)
+        }
+      })
+      if (!changed) return s
+      return {
+        orders: next,
+        balance: s.balance + pnl,
+        lastOrderResult: { ok: true, message: 'Positions closed at the current market price.' }
+      }
+    }),
+  dismissRewindWarning: () => set({ rewindWarningDismissed: true }),
   setSelectedDrawing: (selection) =>
     set((s) => {
       // The same drawing id can carry new anchors after the user drags the
@@ -477,7 +581,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       playbackTimeframe: input.timeframe,
       playing: false,
       balance: input.balance,
+      startBalance: input.balance,
       orders: [],
+      rewindWarningDismissed: false,
       selectedDrawing: null,
       lastOrderResult: null
     })

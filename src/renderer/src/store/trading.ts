@@ -102,6 +102,87 @@ export interface EvalResult {
   closed: Order[]
 }
 
+/** True while any order is FILLED — i.e. the trader is inside a position that
+ *  has a live stop-loss / take-profit. Going backward is refused in this state
+ *  (a dialog offers to close it first, or you can close it in the Trading
+ *  panel). */
+export function hasOpenPosition(orders: Order[]): boolean {
+  return orders.some((order) => order.status === 'filled')
+}
+
+/** Index of the candle where the MOST RECENT stop-loss/take-profit exit
+ *  happened, or `undefined` when no auto-closed trade exists yet. The playback
+ *  panel uses this as the rewind boundary: going back to (or past) this index
+ *  makes the positions the user took disappear, so it warns first. */
+export function lastSltpCloseIndex(orders: Order[]): number | undefined {
+  let last: number | undefined
+  for (const order of orders) {
+    if (
+      order.status === 'closed' &&
+      order.exitReason !== 'manual' &&
+      order.closedAtIndex !== undefined &&
+      (last === undefined || order.closedAtIndex > last)
+    )
+      last = order.closedAtIndex
+  }
+  return last
+}
+
+/**
+ * Rewind the simulated account to `targetIndex` (a possible backward move's
+ * destination). Every order is restored to its exact state at that point of
+ * the playback timeline:
+ *  - a pending (never-filled) order not yet submitted at the target is
+ *    REMOVED — it didn't exist back then; one already on the books stays;
+ *  - a trade the user took — whether still open or already closed, exit at
+ *    stop-loss, take-profit, or manual — whose entry or exit lands at/after
+ *    the target is REMOVED ENTIRELY: no ghost pending order is left behind,
+ *    going backward past a position never re-enters it, never refills it on
+ *    forward replay — the positions they took are simply gone;
+ *  - a trade already closed before the target keeps its realized PnL.
+ * Balance is recomputed as `startBalance` plus the PnL of every trade closed
+ * before the target, so realized PnL from positions taken later in the
+ * timeline "disappears" — the account is exactly what it was back then.
+ * Pure and deterministic: the recorded `submissionIndex` / `filledAtIndex` /
+ * `closedAtIndex` stamps make this exact without re-running the whole
+ * evaluation.
+ */
+export function restoreOrdersAt(
+  orders: Order[],
+  startBalance: number,
+  targetIndex: number
+): { orders: Order[]; balance: number } {
+  let balance = startBalance
+  const next: Order[] = []
+  for (const order of orders) {
+    const filledAtIndex = order.filledAtIndex ?? Number.POSITIVE_INFINITY
+    const closedAtIndex = order.closedAtIndex ?? Number.POSITIVE_INFINITY
+
+    // Never taken yet at the target — the user hadn't submitted it (or the
+    // taken position is being unwound): drop it instead of leaving a pending
+    // ghost order behind.
+    if (order.status === 'pending') {
+      if (targetIndex >= order.submissionIndex) next.push(order)
+      continue
+    }
+    if (filledAtIndex >= targetIndex || closedAtIndex >= targetIndex) continue
+
+    // An open position whose entry predates the target: it was through the
+    // entry before the rewind point, so it stays open. (The playback panel
+    // never rewinds INTO an open position — gate + dialog — but the pure
+    // function stays exact for any caller.)
+    if (order.status === 'filled') {
+      next.push(order)
+      continue
+    }
+
+    // Already realized before `targetIndex` — its PnL stays in the account.
+    if (order.pnl !== undefined) balance += order.pnl
+    next.push(order)
+  }
+  return { orders: next, balance }
+}
+
 /**
  * Evaluate every unconsumed order against the candles newly revealed between
  * `fromIndex` (EXCLUSIVE) and `toIndex` (inclusive) of the session's base

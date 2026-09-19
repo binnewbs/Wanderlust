@@ -209,14 +209,19 @@ function createWindow(): void {
               const time0 = timeText();
               const paintedAtStart = samplePainted();
 
-              // 4b. Go To: jump to 2024-01-04 → the index must land inside the
-              // second day (~1440 of ~2880 m1 candles) and the chart repaint.
+              // 4b. Go To: open the dropdown, then jump to 2024-01-04 via
+              // Custom Date → the index must land inside the second day
+              // (~1440 of ~2880 m1 candles) and the chart repaint.
+              const gtb = document.querySelector('[data-testid="playback-session-goto-btn"]');
+              if (!gtb) return { ok: false, step: 'no-goto-btn', diag: diag() };
+              gtb.click();
+              await sleep(200);
               const gd = document.querySelector('[data-testid="playback-goto-date"]');
               if (!gd) return { ok: false, step: 'no-goto-input', diag: diag() };
               setVal(gd, '2024-01-04');
               await sleep(150);
               const gb = document.querySelector('[data-testid="playback-goto-btn"]');
-              if (!gb) return { ok: false, step: 'no-goto-btn', diag: diag() };
+              if (!gb) return { ok: false, step: 'no-goto-btn2', diag: diag() };
               gb.click();
               await sleep(1400);
               const counterGo = idxText();
