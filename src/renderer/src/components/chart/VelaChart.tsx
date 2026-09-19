@@ -163,19 +163,6 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
       useSessionStore.getState().setSelectedDrawing(found)
     }
     const onEdited = (e: { id: string }): void => {
-      // The menu promises "SL/TP locked to the tool" — moving the drawing's
-      // anchors after submission repricies every order linked to it, so the
-      // order behaves like the lines on the chart AND the visual lines keep
-      // matching the tool (playback and display agree).
-      const drawing = chart.drawings.all().find((d) => d.id === e.id)
-      const selection = drawing ? positionSelection(drawing) : null
-      if (selection) {
-        useSessionStore.getState().syncOrderFromDrawing(e.id, {
-          entry: selection.entryPrice,
-          stop: selection.stopLoss,
-          target: selection.takeProfit
-        })
-      }
       if (useSessionStore.getState().selectedDrawing?.drawingId !== e.id) return
       useSessionStore.getState().setSelectedDrawing(selectionById(e.id))
     }

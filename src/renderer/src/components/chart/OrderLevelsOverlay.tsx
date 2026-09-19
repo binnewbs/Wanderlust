@@ -1,16 +1,14 @@
-import { useEffect, useMemo, useReducer, useRef } from 'react'
-import { useSessionStore } from '@/store/session'
+import { useEffect, useMemo, useRef } from 'react'
+import { sessionBaseCandles, sessionBaseRunUp, useSessionStore } from '@/store/session'
+import type { Order } from '@/store/trading'
 import {
   PRICE_PANE_ID,
   onRendererCanvasGesture,
   onRendererViewport,
-  positionAnchorsOf,
   rendererOf,
-  setPositionAnchorPrice,
   velaChartRef,
   type CoordsBridge,
   type PaneBounds,
-  type PositionAnchors,
   type PriceRange,
   type RendererBridge
 } from './chartBridge'
@@ -25,14 +23,10 @@ import {
  *   - stop    — red, draggable   → reprices the order's stopLoss live
  *   - target  — green, draggable → reprices the order's takeProfit live
  *
- * PRICE SOURCE: an order created FROM a Long/Short Position drawing carries
- * `drawingId`, and its strips are priced from the drawing's LIVE anchors
- * [entry, stop, target] — the "actual tp/sl/entry price from the chart".
- * Moving the tool moves the lines (drawing:edited re-resolves them), dragging
- * a strip reprices BOTH the order and the tool's anchor, and a market fill
- * never yanks the entry line off the tool (it stays on the drawn entry).
- * Manual orders (no drawing) fall back to the stored fields
- * (entry = fillPrice ?? orderPrice).
+ * PRICE SOURCE: order fields only. The position tool seeds an order at
+ * submission, then becomes independent: moving it never changes an existing
+ * order or its lines. Entry is `fillPrice` after a fill, otherwise
+ * `orderPrice`; SL/TP come from the order fields.
  *
  * Placement is driven by THREE synchronized sources, so the strips are glued to
  * the price axis through EVERY repaint path (not just eased ones):
@@ -60,20 +54,14 @@ import {
 
 type LevelKind = 'entry' | 'stopLoss' | 'takeProfit'
 
-/** Drawing lifecycle events that can move a position tool's anchors. */
-const DRAWING_EVENTS = [
-  'drawing:created',
-  'drawing:edited',
-  'drawing:removed',
-  'drawing:selected'
-] as const
-
 interface StripSpec {
   key: string
   orderId: string
-  drawingId?: string | null
   level: LevelKind
   price: number
+  /** Live unrealized PnL (entry) or projected PnL (TP / SL). */
+  money?: string
+  closeable?: boolean
 }
 
 /** Half the strip hit-area height (px). The visible line sits in the middle. */
@@ -85,6 +73,20 @@ function formatPrice(p: number): string {
   return s.replace(/0+$/, '').replace(/\.$/, '')
 }
 
+function formatMoney(amount: number): string {
+  const sign = amount > 0 ? '+' : amount < 0 ? '−' : ''
+  return `${sign}$${Math.abs(amount).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  })}`
+}
+
+function pnlAt(order: Order, price: number): number {
+  const entry = order.fillPrice
+  if (!Number.isFinite(entry) || !Number.isFinite(order.size) || !Number.isFinite(price)) return 0
+  return (price - entry) * order.size * (order.direction === 'long' ? 1 : -1)
+}
+
 const STRIP_STYLES: Record<LevelKind, { line: string; label: string }> = {
   entry: { line: 'bg-zinc-400/50', label: 'bg-zinc-700/90 text-zinc-100' },
   stopLoss: { line: 'bg-red-500', label: 'bg-red-600/95 text-white' },
@@ -94,56 +96,56 @@ const STRIP_STYLES: Record<LevelKind, { line: string; label: string }> = {
 export default function OrderLevelsOverlay(): React.JSX.Element {
   const orders = useSessionStore((s) => s.orders)
   const session = useSessionStore((s) => s.session)
-  // Bumped on Vela drawing create/edit/remove/select events (and chart swaps)
-  // so the strip list re-resolves LIVE tool anchors — moving the Long/Short
-  // Position tool moves the lines, exactly as the user asked ("the visual lines
-  // must follow the actual tp/sl/entry price from the chart").
-  const [drawTick, rerender] = useReducer((c: number) => c + 1, 0)
-
+  const currentIndex = useSessionStore((s) => s.currentIndex)
   const rootRef = useRef<HTMLDivElement>(null)
   const stripEls = useRef(new Map<string, HTMLDivElement>())
   const stripsRef = useRef<StripSpec[]>([])
-  const frameRef = useRef<{ coords: CoordsBridge; scale: PriceRange; bounds: PaneBounds } | null>(
-    null
-  )
+  const frameRef = useRef<{
+    coords: CoordsBridge
+    scale: PriceRange
+    bounds: PaneBounds
+    /** Canvas plot origin relative to this DOM overlay's origin. */
+    canvasTop: number
+  } | null>(null)
   const dragRef = useRef<{ orderId: string; level: 'stopLoss' | 'takeProfit' } | null>(null)
 
   // Build the strip list from the CURRENT orders and mirror it into a ref the
   // rAF loop can read without re-subscribing to every pointer move. Memoizing
   // keeps the array identity stable between order/session changes.
   //
-  // PRICE SOURCE — an order created FROM a drawing carries `drawingId`, and its
-  // strips show the drawing's LIVE anchors [entry, stop, target] (re-resolved
-  // on every drawing event). That is the "actual price from the chart": after a
-  // market fill the entry line stays ON the tool's entry (it doesn't jump to
-  // the fill's open), and editing the tool moves the lines. Manual orders (no
-  // drawing) fall back to the stored order fields — entry = fillPrice ?? orderPrice.
+  // PRICE SOURCE — submitted orders are independent from the drawing that
+  // seeded them. Editing a Long/Short Position tool is planning work, not an
+  // amendment to an order already placed with the simulator.
   const strips = useMemo((): StripSpec[] => {
-    void drawTick // drawing events re-run this memo to re-resolve live anchors
     const out: StripSpec[] = []
     if (!session) return out
-    const pushLevel = (o, level: LevelKind, price: number, drawingId?: string | null): void => {
+    const base = sessionBaseCandles(session)
+    const runUp = sessionBaseRunUp(session)
+    const livePrice =
+      currentIndex > 0 ? base[currentIndex - 1]?.close : runUp.length > 0 ? runUp[runUp.length - 1]?.close : undefined
+    const pushLevel = (o: Order, level: LevelKind, price: number): void => {
       if (!Number.isFinite(price) || price <= 0) return
-      out.push({ key: `${o.id}:${level}`, orderId: o.id, drawingId, level, price })
+      const active = o.status === 'filled' && o.fillPrice !== undefined
+      const pnlPrice = level === 'entry' ? livePrice : price
+      const money = active && Number.isFinite(pnlPrice) ? formatMoney(pnlAt(o, pnlPrice)) : undefined
+      out.push({
+        key: `${o.id}:${level}`,
+        orderId: o.id,
+        level,
+        price,
+        money,
+        closeable: active && level === 'entry'
+      })
     }
     for (const o of orders) {
       if (o.symbol !== session.asset.id) continue
       if (o.status !== 'pending' && o.status !== 'filled') continue
-      const anchors: PositionAnchors | null = o.drawingId
-        ? positionAnchorsOf(velaChartRef.current, o.drawingId)
-        : null
-      if (anchors) {
-        pushLevel(o, 'entry', anchors.entry, o.drawingId)
-        pushLevel(o, 'stopLoss', anchors.stop, o.drawingId)
-        pushLevel(o, 'takeProfit', anchors.target, o.drawingId)
-      } else {
-        pushLevel(o, 'entry', o.fillPrice ?? o.orderPrice, o.drawingId)
-        pushLevel(o, 'stopLoss', o.stopLoss, o.drawingId)
-        pushLevel(o, 'takeProfit', o.takeProfit, o.drawingId)
-      }
+      pushLevel(o, 'entry', o.fillPrice ?? o.orderPrice)
+      pushLevel(o, 'stopLoss', o.stopLoss)
+      pushLevel(o, 'takeProfit', o.takeProfit)
     }
     return out
-  }, [orders, session, drawTick])
+  }, [orders, session, currentIndex])
   useEffect(() => {
     stripsRef.current = strips
   }, [strips])
@@ -167,11 +169,37 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
     let raf = 0
     let unsubViewport: (() => void) | null = null
     let unsubCanvas: (() => void) | null = null
-    let unsubDrawings: (() => void) | null = null
     let attachedRenderer: RendererBridge | null = null
-    let attachedChart: unknown = null
     let attachedCanvas: { addEventListener(type: string, fn: (e: Event) => void): unknown } | null =
       null
+    // Optional same-frame resize re-glue: Vela's own ResizeObserver updates
+    // pane.bounds and repaints synchronously inside its callback; this observer
+    // is created AFTER Vela's (the chart tree mounts before this effect's first
+    // place()), so its callback delivers later in the same frame — AFTER Vela
+    // has laid the panes out — letting place() re-glue the strips to the NEW
+    // bounds before paint. Without it, a container resize could leave the
+    // strips one frame behind the canvas (the user's "lines move when I resize
+    // the chart vertically"), because the next rAF may land on the other side
+    // of the bounds update.
+    let resizeObs: ResizeObserver | null = null
+    const bindResizeObserver = (
+      canvas: { addEventListener(type: string, fn: (e: Event) => void): unknown } | null
+    ): void => {
+      try {
+        if (resizeObs) {
+          resizeObs.disconnect()
+          resizeObs = null
+        }
+        if (canvas && typeof ResizeObserver !== 'undefined') {
+          resizeObs = new ResizeObserver(() => {
+            placeRef.current?.()
+          })
+          resizeObs.observe(canvas as unknown as Element)
+        }
+      } catch {
+        resizeObs = null // never throw (black-screen rule)
+      }
+    }
     const placeRef: { current: (() => void) | null } = { current: null }
     // Hash-gated debug counters (E2E only; inert for normal users).
     interface LevelDbg extends Record<string, unknown> {
@@ -263,6 +291,7 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
           unsubCanvas?.()
           unsubCanvas = null
           attachedCanvas = canvas
+          bindResizeObserver(canvas)
           if (canvas) {
             unsubCanvas = onRendererCanvasGesture(
               renderer,
@@ -278,51 +307,6 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
           if (dbg)
             dbg.canvasAttach =
               typeof unsubCanvas === 'function' ? 'ok' : unsubCanvas === null ? 'none' : 'missing'
-        }
-        // THE LIVE-ANCHOR SOURCE: re-subscribe to the chart's drawing events
-        // whenever the chart identity changes (VelaChart keys per session), so
-        // moving/creating/removing the Long/Short Position tool re-resolves the
-        // strip prices from the tool's CURRENT anchors the next render.
-        const chart = velaChartRef.current
-        if (attachedChart !== chart) {
-          unsubDrawings?.()
-          unsubDrawings = null
-          attachedChart = chart
-          const chartApi = chart as {
-            on?(event: string, fn: () => void): (() => void) | void
-          } | null
-          if (chartApi && typeof chartApi.on === 'function') {
-            const unsubs: Array<() => void> = []
-            for (const ev of DRAWING_EVENTS) {
-              try {
-                const un = chartApi.on(ev, () => {
-                  // Tool anchors changed → strips must follow. The dispatch is
-                  // stable across the component's life, safe inside rAF.
-                  rerender()
-                })
-                if (typeof un === 'function') unsubs.push(un)
-              } catch {
-                // keep the rest of the subscriptions — never throw
-              }
-            }
-            if (unsubs.length > 0) {
-              unsubDrawings = () => {
-                for (const un of unsubs) {
-                  try {
-                    un()
-                  } catch {
-                    // already torn down — ignore
-                  }
-                }
-              }
-            }
-          }
-          if (dbg)
-            dbg.drawAttach = unsubDrawings
-              ? typeof unsubDrawings === 'function'
-                ? 'ok'
-                : 'none'
-              : 'none'
         }
         const pane = renderer.scene?.panes?.get(PRICE_PANE_ID)
         if (!pane) {
@@ -348,7 +332,17 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
           if (dbg) dbg.eNoCoords += 1
           return
         }
-        frameRef.current = { coords, scale, bounds }
+        // Vela's coordinate system starts at its native plot canvas. The
+        // overlay is a sibling of the workspace container, whose origin also
+        // includes the workspace's toolbar. On screen those origins differ by
+        // the toolbar height (~49px in the reported repro). Using `y` directly
+        // placed every DOM strip that far above the canvas drawing, and the
+        // error changed as the workspace/chart height changed. Measure the
+        // live DOM origin every placement instead of assuming they coincide.
+        const rootRect = rootRef.current?.getBoundingClientRect()
+        const canvasRect = canvas?.getBoundingClientRect()
+        const canvasTop = rootRect && canvasRect ? canvasRect.top - rootRect.top : 0
+        frameRef.current = { coords, scale, bounds, canvasTop }
         if (dbg) {
           dbg.eOk += 1
           dbg.paneScaleMin = scale.min
@@ -361,7 +355,7 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
             level: spec.level,
             price: spec.price,
             orderId: spec.orderId,
-            drawingId: spec.drawingId ?? null
+            drawingId: null
           }))
         }
         for (const spec of stripsRef.current) {
@@ -388,7 +382,7 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
             }
             continue
           }
-          el.style.transform = `translateY(${y - STRIP_HALF}px)`
+          el.style.transform = `translateY(${canvasTop + y - STRIP_HALF}px)`
           el.style.opacity = '1'
           if (dbg && spec.level === 'entry') dbg.wroteEntry += 1
           if (dbg && spec.level === 'stopLoss') dbg.wroteSL += 1
@@ -409,9 +403,14 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
     return () => {
       alive = false
       cancelAnimationFrame(raf)
+      try {
+        resizeObs?.disconnect()
+      } catch {
+        // already torn down
+      }
+      resizeObs = null
       unsubViewport?.()
       unsubCanvas?.()
-      unsubDrawings?.()
     }
   }, [])
 
@@ -442,26 +441,16 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
     if (!ctx || !root) return
     try {
       const rect = root.getBoundingClientRect()
-      const rawY = e.clientY - rect.top
+      // Pointer coordinates are relative to the overlay; Vela's yToPrice is
+      // relative to the native data canvas. Convert between those origins.
+      const rawY = e.clientY - rect.top - ctx.canvasTop
       const y = Math.min(ctx.bounds.top + ctx.bounds.height, Math.max(ctx.bounds.top, rawY))
       const price = ctx.coords.yToPrice(y, ctx.scale, ctx.bounds)
       if (Number.isFinite(price) && price > 0) {
         // Follow the pointer instantly, then let the store round-trip confirm.
         const el = stripEls.current.get(spec.key)
-        if (el) el.style.transform = `translateY(${y - STRIP_HALF}px)`
+        if (el) el.style.transform = `translateY(${ctx.canvasTop + y - STRIP_HALF}px)`
         useSessionStore.getState().updateOrderLevel(spec.orderId, spec.level, price)
-        // The strip shows the tool's anchor for linked orders — reprice the
-        // drawing's matching anchor too, so the canvas line follows the drag
-        // and the tool stays the source of truth (fires drawing:edited, which
-        // re-syncs the order idempotently).
-        if (spec.drawingId) {
-          setPositionAnchorPrice(
-            velaChartRef.current,
-            spec.drawingId,
-            spec.level === 'stopLoss' ? 1 : 2,
-            price
-          )
-        }
       }
     } catch {
       // ignore: keep the level where it was
@@ -479,9 +468,10 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
   }
 
   return (
-    <div ref={rootRef} className="pointer-events-none absolute inset-0 z-10" aria-hidden="true">
+    <div ref={rootRef} className="pointer-events-none absolute inset-0 z-10">
       {strips.map((spec) => {
         const draggable = spec.level !== 'entry'
+        const interactive = draggable || spec.closeable === true
         const s = STRIP_STYLES[spec.level]
         return (
           <div
@@ -490,7 +480,9 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
             data-testid={`order-level-${spec.level}`}
             data-order-id={spec.orderId}
             className={`absolute left-0 right-0 opacity-0 ${
-              draggable ? 'pointer-events-auto cursor-ns-resize' : ''
+              interactive ? 'pointer-events-auto' : ''
+            } ${
+              draggable ? 'cursor-ns-resize' : ''
             }`}
             style={{ height: STRIP_HALF * 2, touchAction: draggable ? 'none' : undefined }}
             onPointerDown={draggable ? (e) => onDragDown(e, spec) : undefined}
@@ -503,19 +495,37 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
               className={`pointer-events-none absolute left-0 right-0 ${s.line}`}
               style={{ top: STRIP_HALF - 0.5, height: 1 }}
             />
-            {/* Draggable handle — a slightly wider, subtle pill on the right. */}
+            {/* Level / PnL badge. Filled entries include an explicit close control. */}
             <div
-              className={`pointer-events-none absolute rounded-sm ${s.label}`}
+              className={`absolute flex items-center overflow-hidden rounded-sm ${s.label}`}
               style={{
                 top: 2,
                 right: 4,
-                padding: '0 5px',
                 height: 9,
                 lineHeight: '9px',
                 fontSize: 9
               }}
             >
-              {spec.level === 'entry' ? 'E' : spec.level === 'stopLoss' ? 'SL' : 'TP'}
+              <span className="pointer-events-none px-[5px]">
+                {spec.level === 'entry' ? 'E' : spec.level === 'stopLoss' ? 'SL' : 'TP'}
+                {spec.money ? ` ${spec.money}` : ''}
+              </span>
+              {spec.closeable && (
+                <button
+                  type="button"
+                  data-testid="close-position-line"
+                  aria-label="Close position at current market price"
+                  title="Close position"
+                  className="flex h-[9px] w-[12px] items-center justify-center border-l border-white/30 text-[10px] leading-none transition-colors hover:bg-white/20"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    useSessionStore.getState().closeOrder(spec.orderId)
+                  }}
+                >
+                  ×
+                </button>
+              )}
             </div>
             {/* Price label on the left of the strip. */}
             <div

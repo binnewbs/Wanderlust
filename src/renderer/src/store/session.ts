@@ -98,13 +98,8 @@ export interface SessionState {
   /** Live-drag a pending/filled order's SL or TP level (OrderLevelsOverlay).
    *  Closed orders are read-only; the write is a pure guarded map. */
   updateOrderLevel: (orderId: string, level: OrderLevel, price: number) => void
-  /** Sync a linked order's levels from its chart drawing after the tool's
-   *  anchors move (VelaChart drawing:edited). Pending limit/stop orders also
-   *  take the new entry; filled/market keep their executed entry. */
-  syncOrderFromDrawing: (
-    drawingId: string,
-    anchors: { entry: number; stop: number; target: number }
-  ) => void
+  /** Close a filled position at the latest revealed candle close. */
+  closeOrder: (orderId: string) => void
   setRiskPercent: (pct: number) => void
   /** The chart pushes the currently selected position drawing here (or null). */
   setSelectedDrawing: (selection: PositionSelection | null) => void
@@ -356,43 +351,38 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return { orders: next }
     }),
 
-  /** Live-sync linked orders from their chart drawing after the user moves the
-   *  tool's anchors (Phase 7). The New Order menu promises "SL/TP locked to the
-   *  tool" — this is what keeps that promise true AFTER submission: editing the
-   *  drawing repricies the order's stop-loss/take-profit (and a pending
-   *  limit/stop order's entry) so playback behaves like the lines on screen.
-   *  Filled trades keep their executed entry (`fillPrice`/`orderPrice`); market
-   *  entries are the next candle's open, not the drawn anchor. Pure + guarded:
-   *  returns the SAME state when nothing changed, so subscribers render only on
-   *  real reprices. */
-  syncOrderFromDrawing: (drawingId, anchors) =>
+  closeOrder: (orderId) =>
     set((s) => {
-      const fin = (v: number): boolean => Number.isFinite(v) && v > 0
-      if (!drawingId || !fin(anchors.stop) || !fin(anchors.target)) return s
-      let changed = false
-      const next = s.orders.map((o) => {
-        if (o.drawingId !== drawingId || o.status === 'closed') return o
-        let n = o
-        if (anchors.stop !== o.stopLoss) {
-          n = { ...n, stopLoss: anchors.stop }
-          changed = true
-        }
-        if (anchors.target !== o.takeProfit) {
-          n = { ...n, takeProfit: anchors.target }
-          changed = true
-        }
-        if (
-          o.status === 'pending' &&
-          o.orderType !== 'market' &&
-          fin(anchors.entry) &&
-          anchors.entry !== o.orderPrice
-        ) {
-          n = { ...n, orderPrice: anchors.entry }
-          changed = true
-        }
-        return n
-      })
-      return changed ? { orders: next } : s
+      const base = sessionBaseCandles(s.session)
+      const runUp = sessionBaseRunUp(s.session)
+      const candle =
+        s.currentIndex > 0
+          ? base[s.currentIndex - 1]
+          : runUp.length > 0
+            ? runUp[runUp.length - 1]
+            : undefined
+      const exitPrice = candle?.close
+      if (!Number.isFinite(exitPrice) || exitPrice <= 0) return s
+      const order = s.orders.find((candidate) => candidate.id === orderId)
+      if (!order || order.status !== 'filled' || !Number.isFinite(order.fillPrice)) return s
+      const pnl = (exitPrice - order.fillPrice) * (order.size ?? 0) * (order.direction === 'long' ? 1 : -1)
+      return {
+        orders: s.orders.map((candidate) =>
+          candidate.id === orderId
+            ? {
+                ...candidate,
+                status: 'closed',
+                exitPrice,
+                pnl,
+                exitReason: 'manual',
+                closedAtTime: candle.timestamp,
+                closedAtIndex: Math.max(0, s.currentIndex - 1)
+              }
+            : candidate
+        ),
+        balance: s.balance + pnl,
+        lastOrderResult: { ok: true, message: 'Position closed at the current market price.' }
+      }
     }),
 
   setSelectedDrawing: (selection) =>

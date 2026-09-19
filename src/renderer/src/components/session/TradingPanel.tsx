@@ -71,6 +71,8 @@ function OrderChip({ order }: { order: Order }): React.JSX.Element {
 
 function ClosedRow({ order }: { order: Order }): React.JSX.Element {
   const won = (order.pnl ?? 0) >= 0
+  const exitLabel =
+    order.exitReason === 'take_profit' ? 'TP' : order.exitReason === 'stop_loss' ? 'SL' : 'Manual'
   return (
     <span
       data-testid="closed-row"
@@ -79,8 +81,8 @@ function ClosedRow({ order }: { order: Order }): React.JSX.Element {
       <span className="text-zinc-500">
         {ORDER_TYPE_LABEL[order.orderType]} {directionGlyph(order)}
       </span>
-      <span className={order.exitReason === 'take_profit' ? 'text-emerald-300' : 'text-rose-300'}>
-        {order.exitReason === 'take_profit' ? 'TP' : 'SL'}
+      <span className={order.exitReason === 'take_profit' ? 'text-emerald-300' : 'text-zinc-300'}>
+        {exitLabel}
       </span>
       <span>{fmtPrice(order.fillPrice ?? order.orderPrice)}</span>
       <span className={won ? 'text-emerald-300' : 'text-rose-300'}>{fmtMoney(order.pnl)}</span>

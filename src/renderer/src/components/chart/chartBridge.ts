@@ -54,6 +54,8 @@ export interface RendererBridge {
   dataCanvas?: {
     addEventListener(type: string, fn: (e: Event) => void): unknown
     removeEventListener(type: string, fn: (e: Event) => void): unknown
+    /** Native plot canvas position in viewport CSS pixels. */
+    getBoundingClientRect(): DOMRect
   } | null
   /** Optional native hook: fires at the END of every painted frame (post-paint). */
   onViewportChange?(cb: () => void): (() => void) | null | undefined

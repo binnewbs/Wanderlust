@@ -932,7 +932,7 @@ function createWindow(): void {
           for (const [kind, price] of levelPrices) {
             const el = q('[data-testid="order-level-' + kind + '"]');
             if (!el) return fail('no-strip-' + kind);
-            const expTop = renderer.coords.priceToY(price, pane.scale, pane.bounds) - STRIP_HALF;
+            const expTop = (renderer.dataCanvas?.getBoundingClientRect().top ?? rootRect.top) - rootRect.top + renderer.coords.priceToY(price, pane.scale, pane.bounds) - STRIP_HALF;
             const actTop = el.getBoundingClientRect().top - rootRect.top;
             exactDeltas.push({ kind, exp: Math.round(expTop), act: Math.round(actTop), d: Math.round((actTop - expTop) * 10) / 10 });
           }
@@ -984,7 +984,7 @@ function createWindow(): void {
             for (const [kind, price] of levelPrices) {
               const el = q('[data-testid="order-level-' + kind + '"]');
               if (!el) { s.push({ kind, miss: true }); continue; }
-              const expTop = renderer.coords.priceToY(price, pane.scale, pane.bounds) - STRIP_HALF;
+              const expTop = (renderer.dataCanvas?.getBoundingClientRect().top ?? rootRect.top) - rootRect.top + renderer.coords.priceToY(price, pane.scale, pane.bounds) - STRIP_HALF;
               const actTop = el.getBoundingClientRect().top - rootRect.top;
               s.push({ kind, d: Math.round((actTop - expTop) * 10) / 10 });
             }
@@ -1031,7 +1031,7 @@ function createWindow(): void {
           for (const [kind, price] of levelPrices) {
             const el = q('[data-testid="order-level-' + kind + '"]');
             if (!el) return fail('no-strip-settled-' + kind);
-            const expTop = renderer.coords.priceToY(price, pane.scale, pane.bounds) - STRIP_HALF;
+            const expTop = (renderer.dataCanvas?.getBoundingClientRect().top ?? rootRect.top) - rootRect.top + renderer.coords.priceToY(price, pane.scale, pane.bounds) - STRIP_HALF;
             const actTop = el.getBoundingClientRect().top - rootRect.top;
             settledDeltas.push({ kind, d: Math.round((actTop - expTop) * 10) / 10 });
           }
@@ -1141,7 +1141,7 @@ function createWindow(): void {
               const el = levelEls[kind];
               if (!el) { out.push({ kind, miss: true }); continue; }
               const price = truePrice(kind);
-              const expTop = renderer.coords.priceToY(price, pane.scale, pane.bounds) - STRIP_HALF;
+              const expTop = (renderer.dataCanvas?.getBoundingClientRect().top ?? rootRect.top) - rootRect.top + renderer.coords.priceToY(price, pane.scale, pane.bounds) - STRIP_HALF;
               const actTop = el.getBoundingClientRect().top - rootRect.top;
               out.push({ kind, exp: Math.round(expTop * 10) / 10, act: Math.round(actTop * 10) / 10, d: Math.round((actTop - expTop) * 10) / 10 });
             }
@@ -1274,16 +1274,12 @@ function createWindow(): void {
         note('ui9', ui9)
 
         // ---- 4j. Regression for "the lines deviate from the Order's entry/tp/sl
-        // price" + "I want the visual lines to follow the actual price FROM the
-        // chart". Root cause: the strips were priced from static ORDER fields,
-        // which drift from the drawn tool (a market fill's entry uses the fill
-        // open, edits to the tool after submission never reach the order, and
-        // the menu's "SL/TP locked to the tool" promise ended at submission).
+        // price". A position tool seeds an order, but it must NOT remain linked
+        // afterward: changing either one must not mutate the other.
         // ui10 replays the user's exact session — draw tool → New Order →
         // playback fill → edit the tool's anchor → drag a strip — and asserts a
-        // CONSISTENT TRIANGLE at every step: tool anchors == order fields ==
-        // strip lines (px-exact), with the visual entry STAYING on the drawn
-        // entry through a market fill.
+        // static order levels remain pixel-exact through fills, tool edits,
+        // strip drags and zooming.
         const ui10 = await js(`(async () => {
           const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           const q = (s) => document.querySelector(s);
@@ -1317,7 +1313,7 @@ function createWindow(): void {
           const stripGap = (orderId, kind, price) => {
             const el = stripEl(orderId, kind);
             if (!el) return Infinity;
-            const expTop = renderer.coords.priceToY(price, pane.scale, pane.bounds) - STRIP_HALF;
+            const expTop = (renderer.dataCanvas?.getBoundingClientRect().top ?? root.getBoundingClientRect().top) - root.getBoundingClientRect().top + renderer.coords.priceToY(price, pane.scale, pane.bounds) - STRIP_HALF;
             const actTop = el.getBoundingClientRect().top - root.getBoundingClientRect().top;
             return Math.round((actTop - expTop) * 10) / 10;
           };
@@ -1379,15 +1375,17 @@ function createWindow(): void {
           const targetFillOpen = candles[cur]?.open ?? NaN;
           const B = {
             order: orderB, specs: specsOf(orderB?.id ?? ''), targetFillOpen,
-            gaps: { entry: stripGap(orderB?.id ?? '', 'entry', entryA), stop: stripGap(orderB?.id ?? '', 'stopLoss', stopA), target: stripGap(orderB?.id ?? '', 'takeProfit', targetA) },
+            draw: anchorsOf(did),
+            gaps: { entry: stripGap(orderB?.id ?? '', 'entry', targetFillOpen), stop: stripGap(orderB?.id ?? '', 'stopLoss', stopA), target: stripGap(orderB?.id ?? '', 'takeProfit', targetA) },
             labelEntry: labelOf(orderB?.id ?? '', 'entry')
           };
           const Bok = !!orderB && orderB.status === 'filled'
             && orderB.fillPrice === targetFillOpen
-            && B.specs.entry === entryA && B.specs.stop === stopA && B.specs.target === targetA
+            && B.draw?.entry === entryA
+            && B.specs.entry === targetFillOpen && B.specs.stop === stopA && B.specs.target === targetA
             && B.gaps.entry <= 1.5 && B.gaps.stop <= 1.5 && B.gaps.target <= 1.5;
 
-          // ── C. Edit the TOOL's stop anchor → order AND strip must follow ──
+          // ── C. Edit the TOOL's stop anchor → order and strip stay unchanged ──
           const stop2 = Math.round((stopA - 0.001) * 1e6) / 1e6;
           const aNow = anchorsOf(did);
           wl.chart.drawings.update(did, { anchors: [
@@ -1395,19 +1393,19 @@ function createWindow(): void {
             { time: cE.timestamp, price: stop2 },
             { time: cE.timestamp, price: aNow.target }
           ] });
-          await sleep(350); // drawing:edited → syncOrderFromDrawing → strips re-resolve
+          await sleep(350);
           const orderC = orderOf(did);
           const C = {
             draw: anchorsOf(did), order: orderC, specs: specsOf(orderC?.id ?? ''),
-            gapStop: stripGap(orderC?.id ?? '', 'stopLoss', stop2),
-            gapEntryUnchanged: stripGap(orderC?.id ?? '', 'entry', aNow.entry),
+            gapStop: stripGap(orderC?.id ?? '', 'stopLoss', stopA),
+            gapEntryUnchanged: stripGap(orderC?.id ?? '', 'entry', targetFillOpen),
             labelStop: labelOf(orderC?.id ?? '', 'stopLoss')
           };
-          const Cok = !!orderC && !!C.draw && C.draw.stop === stop2 && orderC.stopLoss === stop2
-            && C.specs.stop === stop2 && C.specs.entry === aNow.entry
+          const Cok = !!orderC && !!C.draw && C.draw.stop === stop2 && orderC.stopLoss === stopA
+            && C.specs.stop === stopA && C.specs.entry === targetFillOpen
             && C.gapStop <= 1.5 && C.gapEntryUnchanged <= 1.5;
 
-          // ── D. Strip-DRAG the SL line → BOTH order and tool anchor move ──
+          // ── D. Strip-DRAG the SL line → order moves; tool stays unchanged ──
           const slEl = stripEl(orderC?.id ?? '', 'stopLoss');
           if (!slEl) return ({ ok: false, step: 'no-sl-d' });
           const rD = slEl.getBoundingClientRect();
@@ -1421,15 +1419,16 @@ function createWindow(): void {
           const orderD = orderOf(did);
           const drawD = anchorsOf(did);
           const rootTop = root.getBoundingClientRect().top;
-          const yD = Math.min(pane.bounds.top + pane.bounds.height, Math.max(pane.bounds.top, y0D + 24 - rootTop));
+          const canvasTop = renderer.dataCanvas?.getBoundingClientRect().top ?? rootTop;
+          const yD = Math.min(pane.bounds.top + pane.bounds.height, Math.max(pane.bounds.top, y0D + 24 - rootTop - (canvasTop - rootTop)));
           const expectedStopD = renderer.coords.yToPrice(yD, pane.scale, pane.bounds);
           const D = {
             order: orderD, draw: drawD, specs: specsOf(orderD?.id ?? ''), expectedStop: expectedStopD,
             orderVsDraw: Math.abs((orderD?.stopLoss ?? NaN) - (drawD?.stop ?? NaN)) < 1e-9,
-            gapStop: stripGap(orderD?.id ?? '', 'stopLoss', drawD?.stop ?? NaN),
+            gapStop: stripGap(orderD?.id ?? '', 'stopLoss', orderD?.stopLoss ?? NaN),
             labelStop: labelOf(orderD?.id ?? '', 'stopLoss')
           };
-          const Dok = !!orderD && !!drawD && D.orderVsDraw
+          const Dok = !!orderD && !!drawD && !D.orderVsDraw && drawD.stop === stop2
             && D.gapStop <= 1.5
             && Math.abs((orderD?.stopLoss ?? NaN) - expectedStopD) < 0.0002;
 
@@ -1451,9 +1450,9 @@ function createWindow(): void {
           for (let i = 0; i < 8; i++) {
             await sleep(25);
             Eglues.push(Math.max(
-              stripGap(orderD?.id ?? '', 'entry', aNow.entry),
-              stripGap(orderD?.id ?? '', 'stopLoss', drawD?.stop ?? NaN),
-              stripGap(orderD?.id ?? '', 'takeProfit', aNow.target)
+              stripGap(orderD?.id ?? '', 'entry', targetFillOpen),
+              stripGap(orderD?.id ?? '', 'stopLoss', orderD?.stopLoss ?? NaN),
+              stripGap(orderD?.id ?? '', 'takeProfit', targetA)
             ));
           }
           await sleep(350);
@@ -1472,6 +1471,154 @@ function createWindow(): void {
         })()`)
         await shot('/tmp/opencode/wanderlust-11-anchors.png')
         note('ui10', ui10)
+
+        // ---- 4l. Regression for the user's clarified repro: \"when i RESIZE the
+        // chart VERTICALLY the lines moves and did NOT stay at the price level\".
+        // Zoom/pan/axis-drag glue was covered by ui8/ui9; CONTAINER RESIZE was
+        // never exercised. ui12 resizes the chart region (shrinks + restores both
+        // height and width — the Vela ResizeObserver path) and asserts the strips
+        // stay pixel-glued to their price (specs unchanged, gap <= 1.5px) DURING
+        // the transition AND after settle, for BOTH orders' strips.
+        const ui12 = await js(`(async () => {
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          const q = (s) => document.querySelector(s);
+          const qa = (s) => [...document.querySelectorAll(s)];
+          const wl = window.__wanderlust;
+          if (!wl) return ({ ok: false, step: 'no-e2e-handle' });
+          const renderer = [wl.chart?.rendererControl?.renderer, wl.chart?.renderer, wl.chart?.orchestrator?.renderer]
+            .find((rr) => rr && rr.scene && rr.coords);
+          if (!renderer) return ({ ok: false, step: 'no-renderer' });
+          const pane = [...(renderer.scene?.panes?.values() ?? [])].find((p) => p.kind === 'price');
+          if (!pane) return ({ ok: false, step: 'no-pane' });
+          const root = q('[data-testid="order-level-stopLoss"]')?.parentElement ?? null;
+          if (!root) return ({ ok: false, step: 'no-root' });
+          const host = q('[data-testid="vela-container"]')?.parentElement ?? null;
+          if (!host) return ({ ok: false, step: 'no-host' });
+          const STRIP_HALF = 6;
+          // GROUND-TRUTH dump: every strip element in the DOM, every order in the
+          // store, every drawing on the chart, and the overlay's last spec list.
+          const dumpState = () => ({
+            strips: qa('[data-testid^="order-level-"]').map((el) => ({
+              testid: el.dataset.testid,
+              orderId: el.dataset.orderId,
+              label: el.querySelector('[data-testid$="-price"]')?.textContent?.trim() ?? null,
+              y: Math.round(el.getBoundingClientRect().top * 10) / 10
+            })),
+            orders: (wl.orders() ?? []).map((o) => ({
+              id: o.id, drawingId: o.drawingId, status: o.status, orderPrice: o.orderPrice,
+              stopLoss: o.stopLoss, takeProfit: o.takeProfit, fillPrice: o.fillPrice
+            })),
+            drawings: wl.chart.drawings.all().map((d) => ({
+              id: d.id, type: d.type,
+              anchors: d.anchors.map((a) => a.price)
+            })),
+            specs: window.__wanderlustLevels?.specs ?? null
+          });
+          const kinds = ['entry', 'stopLoss', 'takeProfit'];
+          // Price for a level, with fallbacks: drawing anchor → order field.
+          // (Never trusts only dbg.specs — the point is to FIND the divergence.)
+          const anchorPrice = (a) => {
+            // Anchors come back as {time, price} objects (or plain numbers when
+            // freshly patched). Normalize to a plain number either way.
+            if (a && typeof a === 'object' && 'price' in a) return a.price
+            return a
+          };
+          const priceOf = (o, d, kind) => {
+            if (d) {
+              if (kind === 'entry') return anchorPrice(d.anchors[0])
+              if (kind === 'stopLoss') return anchorPrice(d.anchors[1])
+              return anchorPrice(d.anchors[2])
+            }
+            if (kind === 'entry') return o.fillPrice ?? o.orderPrice
+            if (kind === 'stopLoss') return o.stopLoss
+            return o.takeProfit
+          };
+          const stripEl = (orderId, kind) => qa('[data-testid="order-level-' + kind + '"]').find((el) => el.dataset.orderId === orderId) ?? null;
+          const stripGap = (el, price) => {
+            if (!el || !Number.isFinite(price) || price <= 0) return null;
+            const expTop = (renderer.dataCanvas?.getBoundingClientRect().top ?? root.getBoundingClientRect().top) - root.getBoundingClientRect().top + renderer.coords.priceToY(price, pane.scale, pane.bounds) - STRIP_HALF;
+            const actTop = el.getBoundingClientRect().top - root.getBoundingClientRect().top;
+            return Math.round((actTop - expTop) * 10) / 10;
+          };
+          const orders = (wl.orders() ?? []).filter((o) => o.status === 'pending' || o.status === 'filled');
+          const sample = () => {
+            const out = [];
+            for (const o of orders) {
+              const d = wl.chart.drawings.all().find((dd) => dd.id === o.drawingId) ?? null;
+              for (const k of kinds) {
+                const el = stripEl(o.id, k);
+                out.push({
+                  orderId: o.id, kind: k, hasEl: !!el,
+                  price: priceOf(o, d, k),
+                  gap: stripGap(el, priceOf(o, d, k))
+                });
+              }
+            }
+            return out;
+          };
+          const numericGaps = (rows) => rows.map((r) => r.gap).filter((g) => g !== null && Number.isFinite(g));
+          const maxGap = (rows) => {
+            const g = numericGaps(rows);
+            return g.length ? Math.max(...g.map((v) => Math.abs(v))) : null;
+          };
+          const allElsPresent = (rows) => rows.every((r) => r.hasEl);
+          const hostRect0 = host.getBoundingClientRect();
+          const H0 = hostRect0.height, W0 = hostRect0.width;
+          const startDump = dumpState();
+          pane.manualScale = null;
+          await sleep(220);
+          const baseAuto = sample();
+          const specBefore = JSON.stringify(sample().map((r) => ({ orderId: r.orderId, k: r.kind, p: r.price })));
+          const tries = [];
+          const axis = (rows) => ({ max: maxGap(rows), per: rows.map((r) => ({ k: r.kind, g: r.gap })) });
+          // ── vertical shrink (resize the chart region down by ~28%) ──
+          host.style.height = Math.round(H0 * 0.72) + 'px';
+          tries.push(axis(sample()));
+          for (let i = 0; i < 9; i++) { tries.push(axis(sample())); await sleep(30); }
+          await sleep(350);
+          const afterShrink = sample();
+          const boundsShrink = { top: pane.bounds.top, height: pane.bounds.height };
+          // ── restore height ──
+          host.style.height = H0 + 'px';
+          tries.push(axis(sample()));
+          for (let i = 0; i < 9; i++) { tries.push(axis(sample())); await sleep(30); }
+          await sleep(350);
+          const afterRestoreH = sample();
+          const boundsRestoreH = { top: pane.bounds.top, height: pane.bounds.height };
+          // ── horizontal shrink ──
+          host.style.width = Math.round(W0 * 0.8) + 'px';
+          tries.push(axis(sample()));
+          for (let i = 0; i < 9; i++) { tries.push(axis(sample())); await sleep(30); }
+          await sleep(350);
+          const afterShrinkW = sample();
+          host.style.width = W0 + 'px';
+          await sleep(350);
+          const afterRestoreW = sample();
+          const specAfter = JSON.stringify(sample().map((r) => ({ orderId: r.orderId, k: r.kind, p: r.price })));
+          const stages = [baseAuto, afterShrink, afterRestoreH, afterShrinkW, afterRestoreW];
+          const duringGlitches = tries
+            .map((t) => (t.per ?? []).filter((p) => p.g !== null && Math.abs(p.g) > 1.5))
+            .flat();
+          const ok = stages.every((s) => maxGap(s) !== null && maxGap(s) <= 1.5 && allElsPresent(s))
+            && duringGlitches.length === 0
+            && specBefore === specAfter;
+          return {
+            ok, step: 'final', H0, W0,
+            start: startDump,
+            maxGapBaseAuto: maxGap(baseAuto), allElsBase: allElsPresent(baseAuto),
+            duringGlitches,
+            tries: tries.map((t) => ({ max: t.max, per: t.per })),
+            bounds: [{ when: 'start', top: pane.bounds.top, h: Number.isFinite(pane.bounds.height) ? pane.bounds.height : 0 }, boundsShrink, boundsRestoreH],
+            afterShrink: { maxGap: maxGap(afterShrink), allEls: allElsPresent(afterShrink), rows: afterShrink },
+            afterRestoreH: { maxGap: maxGap(afterRestoreH), allEls: allElsPresent(afterRestoreH) },
+            afterShrinkW: { maxGap: maxGap(afterShrinkW), allEls: allElsPresent(afterShrinkW) },
+            afterRestoreW: { maxGap: maxGap(afterRestoreW), allEls: allElsPresent(afterRestoreW) },
+            pricesStable: specBefore === specAfter,
+            orders: orders.map((o) => o.id)
+          };
+        })()`)
+        await shot('/tmp/opencode/wanderlust-12-resize.png')
+        note('ui12', ui12)
 
         console.log('[e2e] shell      =', JSON.stringify(shellDom))
         console.log('[e2e] download#1 =', JSON.stringify(download1))
@@ -1492,10 +1639,12 @@ function createWindow(): void {
         console.log('[e2e] ui7 freev =', JSON.stringify(ui7))
         console.log('[e2e] ui8 overlay =', JSON.stringify(ui8))
         console.log('[e2e] ui9 dragglue =', JSON.stringify(ui9))
+        console.log('[e2e] ui10 anchors =', JSON.stringify(ui10))
+        console.log('[e2e] ui12 resize =', JSON.stringify(ui12))
         console.log('[e2e] console   =', JSON.stringify(consoleLogs.slice(-8)))
         console.log('[e2e] console-ui =', JSON.stringify(consoleLogs.slice(logsBefore).slice(0, 6)))
         console.log(
-          '[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport,7-playback-view,8-freeview,9-overlay,10-dragglue,11-anchors}.png'
+          '[e2e] screenshots: /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport,7-playback-view,8-freeview,9-overlay,10-dragglue,11-anchors,12-resize}.png'
         )
       } catch (err) {
         console.error('[e2e] FAILED', err)
