@@ -21,17 +21,14 @@ import {
 } from '@/components/ui/input-group'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { formatDateUtc, parseDateUtc } from '@/lib/dates'
-import {
-  NativeSelect,
-  NativeSelectOptGroup,
-  NativeSelectOption
-} from '@/components/ui/native-select'
 import { Progress } from '@/components/ui/progress'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Select,
   SelectContent,
   SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
@@ -154,21 +151,25 @@ export default function NewSessionModal({
             <FieldGroup className="gap-4">
               <Field>
                 <FieldLabel>Asset</FieldLabel>
-                <NativeSelect
-                  value={assetId}
-                  onChange={(e) => setAssetId(e.target.value)}
-                  className="w-full"
-                >
-                  {CATEGORIES.map((category) => (
-                    <NativeSelectOptGroup key={category} label={category}>
-                      {ASSETS.filter((a) => a.category === category).map((a) => (
-                        <NativeSelectOption key={a.id} value={a.id}>
-                          {a.label}
-                        </NativeSelectOption>
+                <Select value={assetId} onValueChange={setAssetId}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Select asset" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <ScrollArea type="always" className="h-72 w-full pr-1">
+                      {CATEGORIES.map((category) => (
+                        <SelectGroup key={category}>
+                          <SelectLabel>{category}</SelectLabel>
+                          {ASSETS.filter((a) => a.category === category).map((a) => (
+                            <SelectItem key={a.id} value={a.id}>
+                              {a.label}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
                       ))}
-                    </NativeSelectOptGroup>
-                  ))}
-                </NativeSelect>
+                    </ScrollArea>
+                  </SelectContent>
+                </Select>
                 <FieldDescription>
                   {asset?.category} · Dukascopy id{' '}
                   <code className="text-foreground">{assetId}</code>
