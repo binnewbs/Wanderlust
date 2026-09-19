@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Activity, ArrowLeft, BarChart3, CandlestickChart, Plus, X } from 'lucide-react'
 import { Alert, AlertAction, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -35,6 +35,12 @@ export default function App(): React.JSX.Element {
   // Bumped on every open so the modal remounts with a fresh key — its form
   // state resets to defaults without a reset effect.
   const [modalNonce, setModalNonce] = useState(0)
+
+  useEffect(() => {
+    if (activeView === 'chart' && session) {
+      window.dispatchEvent(new Event('resize'))
+    }
+  }, [activeView, session])
 
   const openModal = (): void => {
     setModalNonce((n) => n + 1)
@@ -169,8 +175,13 @@ export default function App(): React.JSX.Element {
       {/* Main area */}
       <main className="relative flex-1 overflow-hidden">
         {session ? (
-          activeView === 'chart' ? (
-            <div className="absolute inset-0 flex flex-col">
+          <>
+            {/* Chart view container: kept mounted so workspace, drawings, indicators and user settings survive */}
+            <div
+              className={`absolute inset-0 flex flex-col ${
+                activeView === 'chart' ? 'visible z-10' : 'invisible pointer-events-none -z-10'
+              }`}
+            >
               {/* Session info strip (shown when the header chip is too small) */}
               <div className="flex items-center gap-4 border-b border-border/60 px-5 py-1.5 text-[11px] text-muted-foreground sm:hidden">
                 <span className="font-semibold text-foreground">{session.name}</span>
@@ -194,11 +205,16 @@ export default function App(): React.JSX.Element {
               <TradingPanel />
               <PlaybackPanel />
             </div>
-          ) : (
-            <div className="absolute inset-0 flex flex-col">
+
+            {/* Analytics view container */}
+            <div
+              className={`absolute inset-0 flex flex-col bg-background ${
+                activeView === 'analytics' ? 'visible z-10' : 'invisible pointer-events-none -z-10'
+              }`}
+            >
               <AnalyticsView onBackToChart={() => setActiveView('chart')} />
             </div>
-          )
+          </>
         ) : (
           <SessionsMenu
             onNewSession={openModal}

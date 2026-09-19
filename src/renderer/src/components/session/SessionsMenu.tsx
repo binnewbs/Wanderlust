@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { Plus, Play, BarChart3, Trash2, Calendar, Layers, PlayCircle } from 'lucide-react'
 import {
   Card,
@@ -10,6 +10,14 @@ import {
 } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import {
   Empty,
   EmptyContent,
@@ -34,6 +42,7 @@ export default function SessionsMenu({
 }: SessionsMenuProps): React.JSX.Element {
   const savedSessions = useSessionStore((s) => s.savedSessions)
   const deleteSavedSession = useSessionStore((s) => s.deleteSavedSession)
+  const [sessionToDelete, setSessionToDelete] = useState<SavedSession | null>(null)
 
   if (savedSessions.length === 0) {
     return (
@@ -75,11 +84,6 @@ export default function SessionsMenu({
             start a new backtest.
           </p>
         </div>
-
-        <Button onClick={onNewSession} size="sm">
-          <Plus data-icon="inline-start" />
-          New Session
-        </Button>
       </div>
 
       {/* Sessions Grid */}
@@ -115,9 +119,6 @@ export default function SessionsMenu({
                   </Badge>
                 </div>
                 <div className="mt-2 flex items-center gap-2">
-                  <Badge variant="secondary" className="text-[10px] uppercase">
-                    {s.timeframe}
-                  </Badge>
                   <span className="text-[11px] text-muted-foreground">
                     Updated {new Date(s.updatedAt).toLocaleDateString()}
                   </span>
@@ -178,7 +179,7 @@ export default function SessionsMenu({
                 <Button
                   variant="ghost"
                   size="icon-xs"
-                  onClick={() => deleteSavedSession(s.id)}
+                  onClick={() => setSessionToDelete(s)}
                   title="Delete session"
                   aria-label="Delete session"
                   className="text-muted-foreground hover:text-destructive"
@@ -190,6 +191,42 @@ export default function SessionsMenu({
           )
         })}
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog
+        open={sessionToDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setSessionToDelete(null)
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete session?</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete{' '}
+              <strong className="text-foreground">{sessionToDelete?.name}</strong>? All simulated
+              orders and session history will be permanently removed.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setSessionToDelete(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (sessionToDelete) {
+                  deleteSavedSession(sessionToDelete.id)
+                  setSessionToDelete(null)
+                }
+              }}
+            >
+              <Trash2 data-icon="inline-start" />
+              Delete Session
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

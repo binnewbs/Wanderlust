@@ -236,6 +236,7 @@ export function stepIndexForTimeframe(
 }
 
 const SESSIONS_STORAGE_KEY = 'wanderlust_saved_sessions'
+const activeSessionsCache = new Map<string, ActiveSession>()
 
 function loadSavedSessionsFromStorage(): SavedSession[] {
   if (typeof window === 'undefined' || !window.localStorage) return []
@@ -243,7 +244,12 @@ function loadSavedSessionsFromStorage(): SavedSession[] {
     const raw = window.localStorage.getItem(SESSIONS_STORAGE_KEY)
     if (!raw) return []
     const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
+    if (!Array.isArray(parsed)) return []
+    return parsed.map((s, idx) => ({
+      ...s,
+      id: s.id || `session-${idx}-${Date.now().toString(36)}`,
+      name: s.name || `${s.asset?.label ?? 'EUR/USD'} Replay`
+    }))
   } catch {
     return []
   }
@@ -799,6 +805,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const updated = [saved, ...get().savedSessions.filter((s) => s.id !== sessionId)]
       persistSavedSessionsToStorage(updated)
 
+      activeSessionsCache.set(sessionId, active)
+
       set({
         status: 'ready',
         session: active,
@@ -817,6 +825,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return
     }
 
+    // 1. Fast in-memory cache check: if session was active in this app instance
+    const cachedActive = activeSessionsCache.get(id)
+    if (cachedActive) {
+      set({
+        status: 'ready',
+        session: cachedActive,
+        balance: target.balance,
+        startBalance: target.startBalance,
+        orders: target.orders,
+        currentIndex: target.currentIndex,
+        playbackTimeframe: target.playbackTimeframe,
+        playing: false,
+        selectedDrawing: null,
+        lastOrderResult: null
+      })
+      return
+    }
+
     set({
       status: 'downloading',
       progress: [],
@@ -826,12 +852,48 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     })
 
     try {
-      const { candlesByTimeframe, runUpByTimeframe, sources } = await loadCandlesAndRunUp(
-        target.asset,
-        target.timeframe,
-        target.startDate,
-        target.endDate
-      )
+      // 2. Try loading candles from SQLite cache first
+      const candlesByTimeframe: Partial<Record<Timeframe, Candle[]>> = {}
+      for (const tf of TIMEFRAMES) {
+        const data = await window.api.getCachedData({
+          symbol: target.asset.id,
+          timeframe: tf,
+          startDate: target.startDate,
+          endDate: target.endDate
+        })
+        if (data.ok && data.candles.length > 0) candlesByTimeframe[tf] = data.candles
+      }
+
+      let runUpByTimeframe: Partial<Record<Timeframe, Candle[]>> = {}
+      let sources: Partial<Record<Timeframe, string>> = {}
+
+      const hasCachedCandles = Object.values(candlesByTimeframe).some((c) => c && c.length > 0)
+
+      if (hasCachedCandles) {
+        const runUpEnd = isoAddDays(target.startDate, -1)
+        for (const tf of TIMEFRAMES) {
+          const runUpData = await window.api.getCachedData({
+            symbol: target.asset.id,
+            timeframe: tf,
+            startDate: runUpEnd,
+            endDate: runUpEnd
+          })
+          if (runUpData.ok && runUpData.candles.length > 0) {
+            runUpByTimeframe[tf] = runUpTail(runUpData.candles, timeframeMs(tf))
+          }
+          sources[tf] = 'cache'
+        }
+      } else {
+        const loaded = await loadCandlesAndRunUp(
+          target.asset,
+          target.timeframe,
+          target.startDate,
+          target.endDate
+        )
+        Object.assign(candlesByTimeframe, loaded.candlesByTimeframe)
+        runUpByTimeframe = loaded.runUpByTimeframe
+        sources = loaded.sources
+      }
 
       const active: ActiveSession = {
         id: target.id,
@@ -845,6 +907,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         runUpByTimeframe,
         sources
       }
+
+      activeSessionsCache.set(target.id, active)
 
       set({
         status: 'ready',
@@ -864,6 +928,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   deleteSavedSession: (id: string) => {
+    activeSessionsCache.delete(id)
     const updated = get().savedSessions.filter((s) => s.id !== id)
     persistSavedSessionsToStorage(updated)
     if (get().session?.id === id) {
@@ -884,6 +949,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       savedSessions
     } = get()
     if (session) {
+      activeSessionsCache.set(session.id, session)
       const updated = savedSessions.map((s) => {
         if (s.id === session.id) {
           return {
