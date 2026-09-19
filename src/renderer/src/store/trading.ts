@@ -299,3 +299,77 @@ export function evaluateOrders(
   }
   return { orders: next, balance: bal, closed }
 }
+
+/**
+ * Validates order price relative to current market price based on order type rules:
+ * - Buy Limit: Order Price < Current Price (Buying at a lower/better price)
+ * - Sell Limit: Order Price > Current Price (Selling at a higher/better price)
+ * - Buy Stop: Order Price > Current Price (Buying a breakout above current price)
+ * - Sell Stop: Order Price < Current Price (Selling a breakdown below current price)
+ */
+export function validateOrderTypePrice(
+  orderType: OrderType,
+  direction: TradeDirection,
+  orderPrice: number,
+  currentPrice: number
+): { valid: boolean; message?: string } {
+  if (orderType === 'market') return { valid: true }
+
+  if (direction === 'long' && orderType === 'limit') {
+    if (orderPrice >= currentPrice) {
+      return {
+        valid: false,
+        message: `Buy Limit: Order price (${orderPrice}) must be less than current price (${currentPrice}).`
+      }
+    }
+  } else if (direction === 'short' && orderType === 'limit') {
+    if (orderPrice <= currentPrice) {
+      return {
+        valid: false,
+        message: `Sell Limit: Order price (${orderPrice}) must be greater than current price (${currentPrice}).`
+      }
+    }
+  } else if (direction === 'long' && orderType === 'stop') {
+    if (orderPrice <= currentPrice) {
+      return {
+        valid: false,
+        message: `Buy Stop: Order price (${orderPrice}) must be greater than current price (${currentPrice}).`
+      }
+    }
+  } else if (direction === 'short' && orderType === 'stop') {
+    if (orderPrice >= currentPrice) {
+      return {
+        valid: false,
+        message: `Sell Stop: Order price (${orderPrice}) must be less than current price (${currentPrice}).`
+      }
+    }
+  }
+
+  return { valid: true }
+}
+
+/**
+ * Returns a user-facing rule description / hint for the selected order type and direction.
+ */
+export function getOrderTypeRuleHint(
+  orderType: OrderType,
+  direction: TradeDirection,
+  currentPrice?: number
+): string {
+  if (orderType === 'market') return 'Fills on the next candle open'
+  const cur =
+    currentPrice !== undefined && Number.isFinite(currentPrice) ? ` (Current: ${currentPrice})` : ''
+  if (direction === 'long' && orderType === 'limit') {
+    return `Buy Limit: Order Price < Current Price${cur}`
+  }
+  if (direction === 'short' && orderType === 'limit') {
+    return `Sell Limit: Order Price > Current Price${cur}`
+  }
+  if (direction === 'long' && orderType === 'stop') {
+    return `Buy Stop: Order Price > Current Price${cur}`
+  }
+  if (direction === 'short' && orderType === 'stop') {
+    return `Sell Stop: Order Price < Current Price${cur}`
+  }
+  return ''
+}

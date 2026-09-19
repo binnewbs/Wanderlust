@@ -14,6 +14,7 @@ import {
   nextOrderId,
   restoreOrdersAt,
   sizeForRisk,
+  validateOrderTypePrice,
   type NewOrderInput,
   type Order,
   type OrderLevel,
@@ -356,6 +357,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Level sanity, per direction. Market orders fill at the next candle's open
     // (entry price unknown ahead of time) — only the SL/TP pair must bracket a
     // plausible entry. Limit/stop orders fill AT their order price, so the
+    // A market order does not execute at the position tool's projected entry:
+    // it fills on the next candle. Until that fill arrives, anchor its pending
+    // entry display/risk preview to the latest known market close instead.
+    const base = sessionBaseCandles(s.session)
+    const runUp = sessionBaseRunUp(s.session)
+    const latestClose =
+      s.currentIndex > 0
+        ? base[s.currentIndex - 1]?.close
+        : runUp.length > 0
+          ? runUp[runUp.length - 1]?.close
+          : undefined
+
+    // Level sanity, per direction. Market orders fill at the next candle's open
+    // (entry price unknown ahead of time) — only the SL/TP pair must bracket a
+    // plausible entry. Limit/stop orders fill AT their order price, so the
     // levels must bracket THAT price.
     if (input.orderType !== 'market') {
       if (!fin(input.orderPrice)) {
@@ -378,6 +394,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         })
         return
       }
+
+      // Order type logic rules:
+      // Buy Limit: Order Price < Current Price
+      // Sell Limit: Order Price > Current Price
+      // Buy Stop: Order Price > Current Price
+      // Sell Stop: Order Price < Current Price
+      if (latestClose !== undefined && Number.isFinite(latestClose)) {
+        const check = validateOrderTypePrice(
+          input.orderType,
+          input.direction,
+          input.orderPrice,
+          latestClose
+        )
+        if (!check.valid) {
+          set({
+            lastOrderResult: {
+              ok: false,
+              message: check.message ?? 'Invalid order price for selected order type.'
+            }
+          })
+          return
+        }
+      }
     } else {
       const okLevels =
         input.direction === 'long'
@@ -396,17 +435,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return
       }
     }
-    // A market order does not execute at the position tool's projected entry:
-    // it fills on the next candle. Until that fill arrives, anchor its pending
-    // entry display/risk preview to the latest known market close instead.
-    const base = sessionBaseCandles(s.session)
-    const runUp = sessionBaseRunUp(s.session)
-    const latestClose =
-      s.currentIndex > 0
-        ? base[s.currentIndex - 1]?.close
-        : runUp.length > 0
-          ? runUp[runUp.length - 1]?.close
-          : undefined
+
     const orderPrice =
       input.orderType === 'market' && latestClose !== undefined && Number.isFinite(latestClose)
         ? latestClose

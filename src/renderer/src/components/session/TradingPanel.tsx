@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Plus, X } from 'lucide-react'
+import { cn } from 'cn'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
@@ -54,15 +55,15 @@ function OrderChip({ order }: { order: Order }): React.JSX.Element {
     <Badge
       data-testid="order-chip"
       variant={pending ? 'secondary' : 'outline'}
-      className="h-auto items-baseline gap-1.5 rounded-md px-2 py-1 font-mono text-[11px] font-normal"
+      className="h-7 items-center gap-1.5 rounded-md px-2 font-mono text-[11px] font-normal"
     >
-      <span className="text-[9px] font-sans font-semibold uppercase tracking-wide opacity-70">
+      <span className="font-sans text-[9px] font-semibold uppercase tracking-wider opacity-70">
         {pending ? 'Pending' : 'Active'} · {ORDER_TYPE_LABEL[order.orderType]}
       </span>
       <span>{directionGlyph(order)}</span>
       <span className="font-semibold">{fmtPrice(order.fillPrice ?? order.orderPrice)}</span>
-      <span>SL {fmtPrice(order.stopLoss)}</span>
-      <span>TP {fmtPrice(order.takeProfit)}</span>
+      <span className="opacity-70">SL {fmtPrice(order.stopLoss)}</span>
+      <span className="opacity-70">TP {fmtPrice(order.takeProfit)}</span>
       <span className="opacity-70">{fmtQty(order.size)}u</span>
     </Badge>
   )
@@ -75,16 +76,18 @@ function ClosedRow({ order }: { order: Order }): React.JSX.Element {
   return (
     <span
       data-testid="closed-row"
-      className="inline-flex items-baseline gap-1.5 font-mono text-[11px] text-muted-foreground"
+      className="inline-flex items-center gap-1.5 rounded-md border border-border/50 bg-background/50 px-2 py-0.5 font-mono text-[11px] text-muted-foreground"
     >
-      <span>
+      <span className="font-medium text-foreground">
         {ORDER_TYPE_LABEL[order.orderType]} {directionGlyph(order)}
       </span>
-      <span className={order.exitReason === 'take_profit' ? 'text-positive' : 'text-foreground'}>
+      <span className={order.exitReason === 'take_profit' ? 'text-chart-2' : 'text-foreground'}>
         {exitLabel}
       </span>
       <span>{fmtPrice(order.fillPrice ?? order.orderPrice)}</span>
-      <span className={won ? 'text-positive' : 'text-destructive'}>{fmtMoney(order.pnl)}</span>
+      <span className={won ? 'font-medium text-chart-2' : 'font-medium text-destructive'}>
+        {fmtMoney(order.pnl)}
+      </span>
     </span>
   )
 }
@@ -102,19 +105,17 @@ export default function TradingPanel(): React.JSX.Element {
   const closed = orders.filter((o) => o.status === 'closed')
 
   return (
-    <div className="border-t border-border bg-card px-4 py-2.5">
+    <div className="border-t border-border bg-card px-4 py-2">
       {menuOpen && <NewOrderMenu onClose={() => setMenuOpen(false)} />}
 
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-        <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-          Trading
-        </span>
-
-        <div className="flex items-baseline gap-1.5">
-          <span className="text-[11px] text-muted-foreground">Balance</span>
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Balance
+          </span>
           <span
             data-testid="trading-balance"
-            className="font-mono text-sm font-semibold text-foreground"
+            className="font-mono text-sm font-semibold tracking-tight text-foreground"
           >
             $
             {balance.toLocaleString('en-US', {
@@ -123,6 +124,8 @@ export default function TradingPanel(): React.JSX.Element {
             })}
           </span>
         </div>
+
+        <Separator orientation="vertical" className="h-4" />
 
         <Button
           data-testid="new-order-btn"
@@ -137,40 +140,56 @@ export default function TradingPanel(): React.JSX.Element {
           <Badge
             data-testid="selected-position"
             variant="outline"
-            className="h-auto items-baseline gap-1.5 rounded-md border-chart-2/40 bg-chart-2/10 px-2 py-1 font-mono text-[11px] font-normal text-chart-2"
+            className={cn(
+              'h-8 items-center gap-1.5 rounded-md px-2.5 font-mono text-xs font-normal transition-colors',
+              selectedDrawing.direction === 'long'
+                ? 'border-chart-2/40 bg-chart-2/10 text-chart-2'
+                : 'border-destructive/40 bg-destructive/10 text-destructive'
+            )}
           >
-            <span className="text-[9px] font-sans font-semibold uppercase tracking-wide">
+            <span className="font-sans text-[10px] font-semibold uppercase tracking-wider opacity-80">
               Selected
             </span>
-            <span>{selectedDrawing.direction === 'long' ? '▲' : '▼'}</span>
-            <span>{fmtPrice(selectedDrawing.entryPrice)}</span>
+            <span className="font-bold">{selectedDrawing.direction === 'long' ? '▲' : '▼'}</span>
+            <span className="font-semibold">{fmtPrice(selectedDrawing.entryPrice)}</span>
             <span className="opacity-70">SL {fmtPrice(selectedDrawing.stopLoss)}</span>
             <span className="opacity-70">TP {fmtPrice(selectedDrawing.takeProfit)}</span>
             <Button
               data-testid="clear-selection"
               onClick={() => setSelectedDrawing(null)}
-              className="ml-1 h-auto w-auto rounded-sm p-0.5 text-current hover:bg-chart-2/20 hover:text-chart-2 dark:hover:bg-chart-2/20"
+              className="ml-0.5 size-4 rounded-sm p-0 text-current hover:bg-foreground/10 hover:text-current"
               variant="ghost"
               size="icon-xs"
               aria-label="Clear selection (New Order falls back to manual)"
               title="Clear selection"
             >
-              <X />
+              <X className="size-3" />
             </Button>
           </Badge>
         ) : (
-          <span className="text-[11px] text-muted-foreground">No position tool selected</span>
+          <span className="text-xs text-muted-foreground">No position tool selected</span>
         )}
 
-        <div className="ml-auto flex items-center gap-3 text-[11px] text-muted-foreground">
-          <span data-testid="pending-count">{pending.length} pending</span>
-          <span data-testid="active-count">{active.length} active</span>
-          <span data-testid="closed-count">{closed.length} closed</span>
+        <div className="ml-auto flex items-center gap-3 text-xs text-muted-foreground">
+          <span data-testid="pending-count">
+            <strong className="font-mono font-medium text-foreground">{pending.length}</strong>{' '}
+            pending
+          </span>
+          <span className="text-border">·</span>
+          <span data-testid="active-count">
+            <strong className="font-mono font-medium text-foreground">{active.length}</strong>{' '}
+            active
+          </span>
+          <span className="text-border">·</span>
+          <span data-testid="closed-count">
+            <strong className="font-mono font-medium text-foreground">{closed.length}</strong>{' '}
+            closed
+          </span>
         </div>
       </div>
 
       {(pending.length > 0 || active.length > 0) && (
-        <div data-testid="live-orders" className="mt-2 flex flex-wrap gap-1.5">
+        <div data-testid="live-orders" className="mt-2 flex flex-wrap items-center gap-1.5">
           {pending.map((o) => (
             <OrderChip key={o.id} order={o} />
           ))}
@@ -183,8 +202,8 @@ export default function TradingPanel(): React.JSX.Element {
       {closed.length > 0 && (
         <div data-testid="closed-orders" className="mt-2">
           <Separator className="mb-2" />
-          <div className="flex flex-wrap gap-x-4 gap-y-1">
-            <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
               Recent closes
             </span>
             {closed.slice(-6).map((o) => (
@@ -195,7 +214,7 @@ export default function TradingPanel(): React.JSX.Element {
       )}
 
       {session && orders.length === 0 && (
-        <p data-testid="orders-empty" className="mt-2 text-[11px] text-muted-foreground">
+        <p data-testid="orders-empty" className="mt-2 text-xs text-muted-foreground">
           Place a Long/Short Position tool on the chart, click it to select, then New Order — or go
           manual.
         </p>

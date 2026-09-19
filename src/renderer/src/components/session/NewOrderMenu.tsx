@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { cn } from 'cn'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -14,7 +15,13 @@ import { Input } from '@/components/ui/input'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { sessionBaseCandles, sessionBaseRunUp, useSessionStore } from '@/store/session'
-import { sizeForRisk, type OrderType, type TradeDirection } from '@/store/trading'
+import {
+  getOrderTypeRuleHint,
+  sizeForRisk,
+  validateOrderTypePrice,
+  type OrderType,
+  type TradeDirection
+} from '@/store/trading'
 import { positionAnchorsOf, velaChartRef } from '@/components/chart/chartBridge'
 
 /**
@@ -89,6 +96,18 @@ export default function NewOrderMenu({ onClose }: NewOrderMenuProps): React.JSX.
   const fromTool = selectedDrawing !== null
   const entryLockedToMarket = orderType === 'market'
 
+  const orderTypeHint = useMemo(
+    () => getOrderTypeRuleHint(orderType, direction, lastClose),
+    [orderType, direction, lastClose]
+  )
+
+  const orderTypeValidation = useMemo(() => {
+    if (orderType === 'market' || !entry || entry <= 0 || lastClose === undefined) {
+      return { valid: true }
+    }
+    return validateOrderTypePrice(orderType, direction, entry, lastClose)
+  }, [orderType, direction, entry, lastClose])
+
   const handleSubmit = (): void => {
     setError(null)
     // Snapshot the live drawing at the confirmation click. This is a final
@@ -106,6 +125,15 @@ export default function NewOrderMenu({ onClose }: NewOrderMenuProps): React.JSX.
         ? 'long'
         : 'short'
       : direction
+
+    if (orderType !== 'market' && lastClose !== undefined && Number.isFinite(lastClose)) {
+      const check = validateOrderTypePrice(orderType, submitDirection, submitEntry, lastClose)
+      if (!check.valid) {
+        setError(check.message ?? 'Invalid order price for selected order type.')
+        return
+      }
+    }
+
     submitOrder({
       drawingId: selectedDrawing?.drawingId,
       orderType,
@@ -170,7 +198,14 @@ export default function NewOrderMenu({ onClose }: NewOrderMenuProps): React.JSX.
 
           {/* Order type */}
           <Field>
-            <FieldLabel>Order type</FieldLabel>
+            <div className="flex items-center justify-between">
+              <FieldLabel>Order type</FieldLabel>
+              {lastClose !== undefined && (
+                <span className="font-mono text-xs text-muted-foreground">
+                  Current: <strong className="text-foreground">{lastClose}</strong>
+                </span>
+              )}
+            </div>
             <Tabs
               value={orderType}
               onValueChange={(v) => setOrderType(v as OrderType)}
@@ -185,6 +220,11 @@ export default function NewOrderMenu({ onClose }: NewOrderMenuProps): React.JSX.
                 ))}
               </TabsList>
             </Tabs>
+            <FieldDescription
+              className={cn(!orderTypeValidation.valid && 'font-medium text-destructive')}
+            >
+              {!orderTypeValidation.valid ? orderTypeValidation.message : orderTypeHint}
+            </FieldDescription>
           </Field>
 
           {/* Direction */}
@@ -229,6 +269,10 @@ export default function NewOrderMenu({ onClose }: NewOrderMenuProps): React.JSX.
                 disabled={entryLockedToMarket}
                 inputMode="decimal"
                 placeholder={entryLockedToMarket ? 'Market' : '0.00000'}
+                aria-invalid={!orderTypeValidation.valid}
+                className={cn(
+                  !orderTypeValidation.valid && 'border-destructive focus-visible:ring-destructive'
+                )}
               />
               {entryLockedToMarket && (
                 <FieldDescription>Fills on the next candle open</FieldDescription>
@@ -317,7 +361,7 @@ export default function NewOrderMenu({ onClose }: NewOrderMenuProps): React.JSX.
               data-testid="confirm-order"
               size="sm"
               onClick={handleSubmit}
-              disabled={!session || risk <= 0}
+              disabled={!session || risk <= 0 || !orderTypeValidation.valid}
             >
               Place {ORDER_TYPE_OPTIONS.find((o) => o.value === orderType)?.label} order
             </Button>
