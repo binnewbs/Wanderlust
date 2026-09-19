@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Gauge,
   Pause,
   Play,
@@ -426,7 +427,9 @@ export default function PlaybackPanel(): React.JSX.Element {
               data-testid="playback-session-goto-btn"
             >
               Go To
-              <ChevronDown />
+              <ChevronUp
+                className={cn('transition-transform duration-200', gotoMenuOpen && 'rotate-180')}
+              />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-64">
