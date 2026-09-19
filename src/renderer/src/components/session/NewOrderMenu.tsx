@@ -1,6 +1,18 @@
 import { useMemo, useState } from 'react'
-import { X } from 'lucide-react'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
+import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { sessionBaseCandles, sessionBaseRunUp, useSessionStore } from '@/store/session'
 import { sizeForRisk, type OrderType, type TradeDirection } from '@/store/trading'
 import { positionAnchorsOf, velaChartRef } from '@/components/chart/chartBridge'
@@ -30,28 +42,6 @@ const ORDER_TYPE_OPTIONS: Array<{ value: OrderType; label: string }> = [
   { value: 'limit', label: 'Limit' },
   { value: 'stop', label: 'Stop' }
 ]
-
-function inputCls(disabled: boolean): string {
-  return `w-full rounded-md border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 text-sm text-zinc-100 outline-none focus:border-sky-500 ${
-    disabled ? 'cursor-not-allowed opacity-50' : ''
-  }`
-}
-
-function labelCls(): string {
-  return 'mb-1 block text-[11px] font-medium uppercase tracking-wide text-zinc-500'
-}
-
-function segCls(active: boolean): string {
-  return `rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-    active ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
-  }`
-}
-
-function riskBtnCls(active: boolean): string {
-  return `rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-    active ? 'bg-sky-600 text-white' : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
-  }`
-}
 
 export interface NewOrderMenuProps {
   onClose: () => void
@@ -111,8 +101,11 @@ export default function NewOrderMenu({ onClose }: NewOrderMenuProps): React.JSX.
     const submitEntry = live?.entry ?? entry
     const submitStop = live?.stop ?? sl
     const submitTarget = live?.target ?? tp
-    const submitDirection: TradeDirection =
-      live ? (live.target >= live.entry ? 'long' : 'short') : direction
+    const submitDirection: TradeDirection = live
+      ? live.target >= live.entry
+        ? 'long'
+        : 'short'
+      : direction
     submitOrder({
       drawingId: selectedDrawing?.drawingId,
       orderType,
@@ -132,107 +125,105 @@ export default function NewOrderMenu({ onClose }: NewOrderMenuProps): React.JSX.
 
   const dirChip =
     direction === 'long' ? (
-      <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/15 px-2 py-0.5 text-xs font-semibold text-emerald-300">
+      <Badge variant="outline" className="border-chart-2/40 bg-chart-2/10 text-chart-2">
         ▲ LONG
-      </span>
+      </Badge>
     ) : (
-      <span className="inline-flex items-center gap-1 rounded-md bg-rose-500/15 px-2 py-0.5 text-xs font-semibold text-rose-300">
+      <Badge variant="outline" className="border-destructive/40 bg-destructive/10 text-destructive">
         ▼ SHORT
-      </span>
+      </Badge>
     )
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label="New order"
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose()
+      }}
     >
-      <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-900 p-5 shadow-2xl">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-sm font-semibold tracking-tight text-zinc-100">New order</h2>
-          <button
-            onClick={onClose}
-            className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
-            aria-label="Close"
-          >
-            <X className="size-4" />
-          </button>
-        </div>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>New order</DialogTitle>
+        </DialogHeader>
 
-        <div className="space-y-4">
+        <div className="flex flex-col gap-4">
           {/* Source banner: chart tool or manual */}
           {fromTool ? (
-            <div
+            <Alert
               data-testid="order-source"
-              className="rounded-md border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-200"
+              className="border-chart-2/40 bg-chart-2/10 text-chart-2"
             >
-              <span className="font-semibold uppercase tracking-wide">From chart tool</span>
-              <span className="ml-2 text-zinc-400">
-                {selectedDrawing!.direction === 'long' ? 'Long' : 'Short'} position drawing
-                {' · '}SL/TP locked to the tool
-              </span>
-            </div>
+              <AlertTitle>From chart tool</AlertTitle>
+              <AlertDescription>
+                {selectedDrawing!.direction === 'long' ? 'Long' : 'Short'} position drawing · SL/TP
+                locked to the tool
+              </AlertDescription>
+            </Alert>
           ) : (
-            <div
-              data-testid="order-source"
-              className="rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-2 text-xs text-zinc-400"
-            >
-              Manual order — set entry, stop-loss and take-profit below (no position tool selected).
-            </div>
+            <Alert data-testid="order-source">
+              <AlertTitle>Manual order</AlertTitle>
+              <AlertDescription>
+                Set entry, stop-loss and take-profit below (no position tool selected).
+              </AlertDescription>
+            </Alert>
           )}
 
           {/* Order type */}
-          <div>
-            <span className={labelCls()}>Order type</span>
-            <div data-testid="order-type" className="flex gap-1 rounded-md bg-zinc-950 p-1">
-              {ORDER_TYPE_OPTIONS.map((o) => (
-                <button
-                  key={o.value}
-                  type="button"
-                  className={segCls(orderType === o.value)}
-                  onClick={() => setOrderType(o.value)}
-                >
-                  {o.label}
-                </button>
-              ))}
-            </div>
-          </div>
+          <Field>
+            <FieldLabel>Order type</FieldLabel>
+            <Tabs
+              value={orderType}
+              onValueChange={(v) => setOrderType(v as OrderType)}
+              data-testid="order-type"
+              className="w-full"
+            >
+              <TabsList className="grid w-full grid-cols-3">
+                {ORDER_TYPE_OPTIONS.map((o) => (
+                  <TabsTrigger key={o.value} value={o.value}>
+                    {o.label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          </Field>
 
           {/* Direction */}
-          <div>
-            <span className={labelCls()}>Direction</span>
+          <Field>
+            <FieldLabel>Direction</FieldLabel>
             {fromTool ? (
               <div className="flex items-center gap-2">{dirChip}</div>
             ) : (
-              <div className="flex gap-1 rounded-md bg-zinc-950 p-1">
-                <button
-                  type="button"
-                  data-testid="dir-long"
-                  className={segCls(direction === 'long')}
-                  onClick={() => setDirection('long')}
-                >
-                  Long
-                </button>
-                <button
-                  type="button"
-                  data-testid="dir-short"
-                  className={segCls(direction === 'short')}
-                  onClick={() => setDirection('short')}
-                >
-                  Short
-                </button>
-              </div>
+              <Tabs
+                value={direction}
+                onValueChange={(v) => setDirection(v as TradeDirection)}
+                className="w-full"
+              >
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger
+                    value="long"
+                    data-testid="dir-long"
+                    className="data-[state=active]:text-chart-2"
+                  >
+                    Long
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="short"
+                    data-testid="dir-short"
+                    className="data-[state=active]:text-destructive"
+                  >
+                    Short
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
             )}
-          </div>
+          </Field>
 
           {/* Levels */}
           <div className="grid grid-cols-3 gap-2">
-            <div>
-              <span className={labelCls()}>Entry</span>
-              <input
+            <Field>
+              <FieldLabel>Entry</FieldLabel>
+              <Input
                 data-testid="order-entry"
-                className={inputCls(entryLockedToMarket)}
                 value={entryLockedToMarket ? 'Market' : entryStr}
                 onChange={(e) => setEntryStr(e.target.value)}
                 disabled={entryLockedToMarket}
@@ -240,61 +231,59 @@ export default function NewOrderMenu({ onClose }: NewOrderMenuProps): React.JSX.
                 placeholder={entryLockedToMarket ? 'Market' : '0.00000'}
               />
               {entryLockedToMarket && (
-                <p className="mt-1 text-[10px] leading-tight text-zinc-500">
-                  Fills on the next candle open
-                </p>
+                <FieldDescription>Fills on the next candle open</FieldDescription>
               )}
-            </div>
-            <div>
-              <span className={labelCls()}>Stop-loss</span>
-              <input
+            </Field>
+            <Field>
+              <FieldLabel>Stop-loss</FieldLabel>
+              <Input
                 data-testid="order-sl"
-                className={inputCls(fromTool)}
                 value={slStr}
                 onChange={(e) => setSlStr(e.target.value)}
                 disabled={fromTool}
                 inputMode="decimal"
                 placeholder="0.00000"
               />
-            </div>
-            <div>
-              <span className={labelCls()}>Take-profit</span>
-              <input
+            </Field>
+            <Field>
+              <FieldLabel>Take-profit</FieldLabel>
+              <Input
                 data-testid="order-tp"
-                className={inputCls(fromTool)}
                 value={tpStr}
                 onChange={(e) => setTpStr(e.target.value)}
                 disabled={fromTool}
                 inputMode="decimal"
                 placeholder="0.00000"
               />
-            </div>
+            </Field>
           </div>
 
           {/* Risk */}
-          <div>
-            <span className={labelCls()}>Risk per trade</span>
-            <div data-testid="risk-templates" className="flex gap-1.5">
-              {RISK_TEMPLATES.map((r) => (
-                <button
-                  key={r}
-                  type="button"
-                  className={riskBtnCls(risk === r)}
-                  onClick={() => setRiskStr(String(r))}
-                >
-                  {r}%
-                </button>
-              ))}
-              <input
+          <Field>
+            <FieldLabel>Risk per trade</FieldLabel>
+            <div className="flex items-center gap-1.5">
+              <ToggleGroup
+                type="single"
+                data-testid="risk-templates"
+                value={RISK_TEMPLATES.some((r) => risk === r) ? String(risk) : undefined}
+                onValueChange={(v) => v && setRiskStr(v)}
+              >
+                {RISK_TEMPLATES.map((r) => (
+                  <ToggleGroupItem key={r} value={String(r)}>
+                    {r}%
+                  </ToggleGroupItem>
+                ))}
+              </ToggleGroup>
+              <Input
                 data-testid="order-risk"
-                className="w-20 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100 outline-none focus:border-sky-500"
+                className="w-20"
                 value={riskStr}
                 onChange={(e) => setRiskStr(e.target.value)}
                 inputMode="decimal"
                 aria-label="Custom risk percent"
               />
             </div>
-            <p data-testid="size-preview" className="mt-1 text-[10px] text-zinc-500">
+            <p data-testid="size-preview" className="text-xs text-muted-foreground">
               {sizeValid
                 ? `Position size ≈ ${size.toLocaleString('en-US', { maximumFractionDigits: 0 })} units · ${
                     orderType === 'market' ? '≈ ' : ''
@@ -304,37 +293,37 @@ export default function NewOrderMenu({ onClose }: NewOrderMenuProps): React.JSX.
                   })} risked`
                 : 'Set entry + stop-loss to preview size'}
             </p>
-          </div>
+          </Field>
 
           {error && (
-            <p data-testid="order-error" className="text-xs text-rose-400">
-              {error}
-            </p>
+            <Alert variant="destructive" data-testid="order-error">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
           )}
-
-          <div className="flex items-center justify-between gap-3 pt-1">
-            <span className="text-[11px] text-zinc-500">
-              Balance{' '}
-              <span className="font-mono text-zinc-300">
-                ${balance.toLocaleString('en-US', { maximumFractionDigits: 2 })}
-              </span>
-            </span>
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={onClose}>
-                Cancel
-              </Button>
-              <Button
-                data-testid="confirm-order"
-                size="sm"
-                onClick={handleSubmit}
-                disabled={!session || risk <= 0}
-              >
-                Place {ORDER_TYPE_OPTIONS.find((o) => o.value === orderType)?.label} order
-              </Button>
-            </div>
-          </div>
         </div>
-      </div>
-    </div>
+
+        <DialogFooter className="sm:justify-between">
+          <div className="flex items-center text-xs text-muted-foreground">
+            Balance{' '}
+            <span className="ml-1 font-mono text-foreground">
+              ${balance.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+            </span>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button
+              data-testid="confirm-order"
+              size="sm"
+              onClick={handleSubmit}
+              disabled={!session || risk <= 0}
+            >
+              Place {ORDER_TYPE_OPTIONS.find((o) => o.value === orderType)?.label} order
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

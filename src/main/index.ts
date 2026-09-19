@@ -180,7 +180,20 @@ function createWindow(): void {
           const diag = () => ({
             text: document.body.textContent.slice(0, 300),
             ids: [...document.querySelectorAll('[id]')].map((el) => el.id),
-            buttons: [...document.querySelectorAll('button')].map((b) => b.textContent?.trim())
+            buttons: [...document.querySelectorAll('button')].map((b) => b.textContent?.trim()),
+            menus: [...document.querySelectorAll('[data-slot="dropdown-menu-content"]')].map((e) => ({
+              slot: e.getAttribute('data-slot'),
+              state: e.getAttribute('data-state'),
+              html: e.innerHTML.slice(0, 400)
+            })),
+            gotoDate: !!document.querySelector('[data-testid="playback-goto-date"]'),
+            radix: [...document.querySelectorAll('[id^="radix-"]')].map((e) => ({
+              id: e.id,
+              tag: e.tagName,
+              slot: e.getAttribute('data-slot'),
+              role: e.getAttribute('role'),
+              text: (e.textContent || '').slice(0, 120)
+            }))
           });
           if (!btn('New Session')) return { ok: false, step: 'no-open-button', diag: diag() };
           btn('New Session').click();
@@ -214,6 +227,8 @@ function createWindow(): void {
               // (~1440 of ~2880 m1 candles) and the chart repaint.
               const gtb = document.querySelector('[data-testid="playback-session-goto-btn"]');
               if (!gtb) return { ok: false, step: 'no-goto-btn', diag: diag() };
+              gtb.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 1, button: 0, buttons: 1 }));
+              gtb.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerId: 1, button: 0, buttons: 0 }));
               gtb.click();
               await sleep(200);
               const gd = document.querySelector('[data-testid="playback-goto-date"]');
@@ -236,10 +251,17 @@ function createWindow(): void {
               const counterStep = idxText();
 
               // 4d. Play at max speed (~20 bars/s): the index must visibly
-              // advance while playing, then Pause freezes it.
+              // advance while playing, then Pause freezes it. The b0 shadcn
+              // control is a Radix Slider (not a native range input): jump it
+              // to max with its End-key keyboard behavior.
               const spd = document.querySelector('[data-testid="playback-speed"]');
               if (spd) {
-                setVal(spd, '120');
+                const slider = spd.querySelector('[role="slider"]');
+                if (slider) {
+                  slider.focus?.();
+                  slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+                  slider.dispatchEvent(new KeyboardEvent('keyup', { key: 'End', bubbles: true }));
+                }
                 await sleep(250);
               }
               const playBtn = document.querySelector('[data-testid="playback-play"]');
@@ -382,6 +404,26 @@ function createWindow(): void {
         await shot('/tmp/opencode/wanderlust-3-runup-grace.png')
         note('ui2', ui2)
 
+        const layout = await js(`(() => {
+          const rect = (el) => el ? (() => { const r = el.getBoundingClientRect(); return { h: +r.height.toFixed(2), w: +r.width.toFixed(2), top: +r.top.toFixed(2) }; })() : null;
+          const host = document.querySelector('[data-testid="vela-container"]')?.parentElement;
+          const speed = document.querySelector('[data-testid="playback-speed"]');
+          const panel = speed ? speed.closest('[class*="flex-wrap"]') : null;
+          const gotoBtn = document.querySelector('[data-testid="playback-session-goto-btn"]');
+          return {
+            innerH: window.innerHeight,
+            host: rect(host),
+            panel: rect(panel),
+            panelChildren: panel ? [...panel.children].map((c) => rect(c)) : null,
+            panelChildKinds: panel ? [...panel.children].map((c) => c.tagName + '.' + (c.className || '').slice(0, 40)) : null,
+            goto: rect(gotoBtn),
+            speed: rect(speed),
+            speedTag: speed ? speed.tagName : null,
+            speedChild: speed && speed.firstElementChild ? rect(speed.firstElementChild) : null
+          };
+        })()`)
+        note('layout', layout)
+
         // ---- 4c. Phase 5: order execution + tick-by-tick evaluation. Runs on
         // the ui2 session (2026-09-01..02, m1 base) parked at index 0. Four
         // orders go through the full New Order flow, each seeded by a SELECTED
@@ -402,7 +444,7 @@ function createWindow(): void {
           const q = (s) => document.querySelector(s);
           const qa = (s) => [...document.querySelectorAll(s)];
           const text = (s) => q(s)?.textContent?.trim() ?? null;
-          const click = (s) => { const el = q(s); if (!el) return false; el.click(); return true; };
+          const click = (s) => { const el = q(s); if (!el) return false; const o = { bubbles: true, cancelable: true, pointerId: 1, button: 0 }; el.dispatchEvent(new PointerEvent('pointerdown', { ...o, buttons: 1 })); el.dispatchEvent(new MouseEvent('mousedown', { ...o, buttons: 1 })); el.dispatchEvent(new PointerEvent('pointerup', { ...o, buttons: 0 })); el.dispatchEvent(new MouseEvent('mouseup', { ...o, buttons: 0 })); el.click(); return true; };
           const fail = (step, extra = {}) => ({ ok: false, step, ...extra });
           const near = (a, b) => Math.abs(a - b) < 0.01;
           const readBalance = () =>
@@ -442,6 +484,11 @@ function createWindow(): void {
               (b) => (b.textContent ?? '').trim() === type
             );
             if (!typeBtn) return false;
+            const ev = { bubbles: true, cancelable: true, pointerId: 1, button: 0 };
+            typeBtn.dispatchEvent(new PointerEvent('pointerdown', { ...ev, buttons: 1 }));
+            typeBtn.dispatchEvent(new MouseEvent('mousedown', { ...ev, buttons: 1 }));
+            typeBtn.dispatchEvent(new PointerEvent('pointerup', { ...ev, buttons: 0 }));
+            typeBtn.dispatchEvent(new MouseEvent('mouseup', { ...ev, buttons: 0 }));
             typeBtn.click();
             await sleep(120);
             return true;
@@ -571,7 +618,7 @@ function createWindow(): void {
           const q = (s) => document.querySelector(s);
           const qa = (s) => [...document.querySelectorAll(s)];
           const text = (s) => q(s)?.textContent?.trim() ?? null;
-          const click = (s) => { const el = q(s); if (!el) return false; el.click(); return true; };
+          const click = (s) => { const el = q(s); if (!el) return false; const o = { bubbles: true, cancelable: true, pointerId: 1, button: 0 }; el.dispatchEvent(new PointerEvent('pointerdown', { ...o, buttons: 1 })); el.dispatchEvent(new MouseEvent('mousedown', { ...o, buttons: 1 })); el.dispatchEvent(new PointerEvent('pointerup', { ...o, buttons: 0 })); el.dispatchEvent(new MouseEvent('mouseup', { ...o, buttons: 0 })); el.click(); return true; };
           const fail = (step, extra = {}) => ({ ok: false, step, ...extra });
           const near = (a, b) => Math.abs(a - b) < 0.01;
           const readBalance = () =>
@@ -664,7 +711,7 @@ function createWindow(): void {
           const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           const q = (s) => document.querySelector(s);
           const text = (s) => q(s)?.textContent?.trim() ?? null;
-          const click = (s) => { const el = q(s); if (!el) return false; el.click(); return true; };
+          const click = (s) => { const el = q(s); if (!el) return false; const o = { bubbles: true, cancelable: true, pointerId: 1, button: 0 }; el.dispatchEvent(new PointerEvent('pointerdown', { ...o, buttons: 1 })); el.dispatchEvent(new MouseEvent('mousedown', { ...o, buttons: 1 })); el.dispatchEvent(new PointerEvent('pointerup', { ...o, buttons: 0 })); el.dispatchEvent(new MouseEvent('mouseup', { ...o, buttons: 0 })); el.click(); return true; };
           const fail = (step, extra = {}) => ({ ok: false, step, ...extra });
           const wl = window.__wanderlust;
           if (!wl) return fail('no-e2e-handle');
@@ -716,7 +763,7 @@ function createWindow(): void {
           const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           const q = (s) => document.querySelector(s);
           const text = (s) => q(s)?.textContent?.trim() ?? null;
-          const click = (s) => { const el = q(s); if (!el) return false; el.click(); return true; };
+          const click = (s) => { const el = q(s); if (!el) return false; const o = { bubbles: true, cancelable: true, pointerId: 1, button: 0 }; el.dispatchEvent(new PointerEvent('pointerdown', { ...o, buttons: 1 })); el.dispatchEvent(new MouseEvent('mousedown', { ...o, buttons: 1 })); el.dispatchEvent(new PointerEvent('pointerup', { ...o, buttons: 0 })); el.dispatchEvent(new MouseEvent('mouseup', { ...o, buttons: 0 })); el.click(); return true; };
           const fail = (step, extra = {}) => ({ ok: false, step, ...extra });
           const wl = window.__wanderlust;
           if (!wl) return fail('no-e2e-handle');
@@ -808,7 +855,7 @@ function createWindow(): void {
           const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           const q = (s) => document.querySelector(s);
           const text = (s) => q(s)?.textContent?.trim() ?? null;
-          const click = (s) => { const el = q(s); if (!el) return false; el.click(); return true; };
+          const click = (s) => { const el = q(s); if (!el) return false; const o = { bubbles: true, cancelable: true, pointerId: 1, button: 0 }; el.dispatchEvent(new PointerEvent('pointerdown', { ...o, buttons: 1 })); el.dispatchEvent(new MouseEvent('mousedown', { ...o, buttons: 1 })); el.dispatchEvent(new PointerEvent('pointerup', { ...o, buttons: 0 })); el.dispatchEvent(new MouseEvent('mouseup', { ...o, buttons: 0 })); el.click(); return true; };
           const fail = (step, extra = {}) => ({ ok: false, step, ...extra });
           const wl = window.__wanderlust;
           if (!wl) return fail('no-e2e-handle');
@@ -864,7 +911,7 @@ function createWindow(): void {
           const q = (s) => document.querySelector(s);
           const qa = (s) => [...document.querySelectorAll(s)];
           const text = (s) => q(s)?.textContent?.trim() ?? null;
-          const click = (s) => { const el = q(s); if (!el) return false; el.click(); return true; };
+          const click = (s) => { const el = q(s); if (!el) return false; const o = { bubbles: true, cancelable: true, pointerId: 1, button: 0 }; el.dispatchEvent(new PointerEvent('pointerdown', { ...o, buttons: 1 })); el.dispatchEvent(new MouseEvent('mousedown', { ...o, buttons: 1 })); el.dispatchEvent(new PointerEvent('pointerup', { ...o, buttons: 0 })); el.dispatchEvent(new MouseEvent('mouseup', { ...o, buttons: 0 })); el.click(); return true; };
           const fail = (step, extra = {}) => ({ ok: false, step, ...extra });
           const wl = window.__wanderlust;
           if (!wl) return fail('no-e2e-handle');
@@ -927,11 +974,17 @@ function createWindow(): void {
           // native coords.priceToY(price, pane.scale, pane.bounds) — the exact
           // math Vela paints candles with — ±1.5px. A stray container offset
           // or a wrong scale/bounds read would show up here.
+          // The overlay renders each strip from the ORDER's own fields (orders
+          // are independent of the seeding drawing once submitted): a pending
+          // market order anchors its entry to the latest revealed close, so the
+          // ground-truth prices below come from the order, not the tool anchors.
           const STRIP_HALF = 6;
+          const pendingOrder = (wl.orders() ?? []).find((o) => o.drawingId === did) ?? null;
+          if (!pendingOrder) return fail('no-order-strips');
           const levelPrices = [
-            ['entry', cE.close],
-            ['stopLoss', cE.low - 0.002],
-            ['takeProfit', cE.high]
+            ['entry', pendingOrder.fillPrice ?? pendingOrder.orderPrice],
+            ['stopLoss', pendingOrder.stopLoss],
+            ['takeProfit', pendingOrder.takeProfit]
           ];
           const exactDeltas = [];
           for (const [kind, price] of levelPrices) {
@@ -1290,7 +1343,7 @@ function createWindow(): void {
           const q = (s) => document.querySelector(s);
           const qa = (s) => [...document.querySelectorAll(s)];
           const text = (s) => q(s)?.textContent?.trim() ?? null;
-          const click = (s) => { const el = q(s); if (!el) return false; el.click(); return true; };
+          const click = (s) => { const el = q(s); if (!el) return false; const o = { bubbles: true, cancelable: true, pointerId: 1, button: 0 }; el.dispatchEvent(new PointerEvent('pointerdown', { ...o, buttons: 1 })); el.dispatchEvent(new MouseEvent('mousedown', { ...o, buttons: 1 })); el.dispatchEvent(new PointerEvent('pointerup', { ...o, buttons: 0 })); el.dispatchEvent(new MouseEvent('mouseup', { ...o, buttons: 0 })); el.click(); return true; };
           const wl = window.__wanderlust;
           if (!wl) return ({ ok: false, step: 'no-e2e-handle' });
           const renderer = [wl.chart?.rendererControl?.renderer, wl.chart?.renderer, wl.chart?.orchestrator?.renderer]
@@ -1363,13 +1416,18 @@ function createWindow(): void {
           await sleep(250);
           const orderA = orderOf(did);
           if (!orderA) return ({ ok: false, step: 'no-order' });
+          // A pending MARKET order is anchored to the latest revealed close for
+          // its entry (it will fill on the next evaluated candle), while its
+          // SL/TP stay locked to the seeding tool. The overlay draws the strip
+          // from the order fields, so assert the strip against THOSE.
+          const entryPx = orderA.fillPrice ?? orderA.orderPrice;
           const A = {
             draw: anchorsOf(did), order: orderA, specs: specsOf(orderA.id),
-            gaps: { entry: stripGap(orderA.id, 'entry', entryA), stop: stripGap(orderA.id, 'stopLoss', stopA), target: stripGap(orderA.id, 'takeProfit', targetA) },
+            gaps: { entry: stripGap(orderA.id, 'entry', entryPx), stop: stripGap(orderA.id, 'stopLoss', stopA), target: stripGap(orderA.id, 'takeProfit', targetA) },
             labels: { entry: labelOf(orderA.id, 'entry'), stop: labelOf(orderA.id, 'stopLoss'), target: labelOf(orderA.id, 'takeProfit') }
           };
           const Aok = !!A.draw && orderA.stopLoss === stopA && orderA.takeProfit === targetA
-            && A.specs.entry === entryA && A.specs.stop === stopA && A.specs.target === targetA
+            && A.specs.entry === entryPx && A.specs.stop === stopA && A.specs.target === targetA
             && Math.max(A.gaps.entry, A.gaps.stop, A.gaps.target) <= 1.5;
 
           // ── B. FILL (2 candles; the market order enters at the open of
@@ -1520,8 +1578,11 @@ function createWindow(): void {
             specs: window.__wanderlustLevels?.specs ?? null
           });
           const kinds = ['entry', 'stopLoss', 'takeProfit'];
-          // Price for a level, with fallbacks: drawing anchor → order field.
-          // (Never trusts only dbg.specs — the point is to FIND the divergence.)
+          // Price the overlay DRAWS for a level: the order's own field is the
+          // ground truth (a submitted order is independent of the seeding
+          // drawing), falling back to the drawing anchor only when the order
+          // field is missing. (Never trusts only dbg.specs — the point is to
+          // FIND the divergence.)
           const anchorPrice = (a) => {
             // Anchors come back as {time, price} objects (or plain numbers when
             // freshly patched). Normalize to a plain number either way.
@@ -1529,14 +1590,15 @@ function createWindow(): void {
             return a
           };
           const priceOf = (o, d, kind) => {
+            const field =
+              kind === 'entry' ? (o.fillPrice ?? o.orderPrice) : kind === 'stopLoss' ? o.stopLoss : o.takeProfit
+            if (Number.isFinite(field) && field > 0) return field
             if (d) {
               if (kind === 'entry') return anchorPrice(d.anchors[0])
               if (kind === 'stopLoss') return anchorPrice(d.anchors[1])
               return anchorPrice(d.anchors[2])
             }
-            if (kind === 'entry') return o.fillPrice ?? o.orderPrice
-            if (kind === 'stopLoss') return o.stopLoss
-            return o.takeProfit
+            return field
           };
           const stripEl = (orderId, kind) => qa('[data-testid="order-level-' + kind + '"]').find((el) => el.dataset.orderId === orderId) ?? null;
           const stripGap = (el, price) => {

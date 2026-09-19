@@ -38,7 +38,10 @@ export default defineConfig(
     // (variants), which breaks fast-refresh's component-only rule.
     files: ['src/renderer/src/components/ui/**/*.tsx'],
     rules: {
-      'react-refresh/only-export-components': 'off'
+      'react-refresh/only-export-components': 'off',
+      // shadcn/ui in a TS codebase: props are typed, not PropTypes-validated.
+      // The calendar's custom render props (from react-day-picker) trigger it.
+      'react/prop-types': 'off'
     }
   },
   eslintConfigPrettier

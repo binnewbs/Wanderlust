@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { Plus, X } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Separator } from '@/components/ui/separator'
 import { useSessionStore } from '@/store/session'
 import type { Order } from '@/store/trading'
 import NewOrderMenu from './NewOrderMenu'
@@ -10,8 +12,8 @@ import NewOrderMenu from './NewOrderMenu'
  *
  * Shows the live balance, the New Order entry point, which position drawing is
  * currently selected on the chart (the New Order menu seeds from it), and the
- * session's orders as compact rows — pending (amber), active/filled (sky) and
- * the most recent closed trades (zinc) with their realized pnl.
+ * session's orders as compact rows — pending (secondary), active/filled
+ * (outline) and the most recent closed trades (muted) with their realized pnl.
  */
 
 const ORDER_TYPE_LABEL: Record<Order['orderType'], string> = {
@@ -49,13 +51,10 @@ function directionGlyph(o: Order): string {
 function OrderChip({ order }: { order: Order }): React.JSX.Element {
   const pending = order.status === 'pending'
   return (
-    <span
+    <Badge
       data-testid="order-chip"
-      className={`inline-flex items-baseline gap-1.5 rounded-md border px-2 py-1 font-mono text-[11px] ${
-        pending
-          ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
-          : 'border-sky-500/40 bg-sky-500/10 text-sky-200'
-      }`}
+      variant={pending ? 'secondary' : 'outline'}
+      className="h-auto items-baseline gap-1.5 rounded-md px-2 py-1 font-mono text-[11px] font-normal"
     >
       <span className="text-[9px] font-sans font-semibold uppercase tracking-wide opacity-70">
         {pending ? 'Pending' : 'Active'} · {ORDER_TYPE_LABEL[order.orderType]}
@@ -65,7 +64,7 @@ function OrderChip({ order }: { order: Order }): React.JSX.Element {
       <span>SL {fmtPrice(order.stopLoss)}</span>
       <span>TP {fmtPrice(order.takeProfit)}</span>
       <span className="opacity-70">{fmtQty(order.size)}u</span>
-    </span>
+    </Badge>
   )
 }
 
@@ -76,16 +75,16 @@ function ClosedRow({ order }: { order: Order }): React.JSX.Element {
   return (
     <span
       data-testid="closed-row"
-      className="inline-flex items-baseline gap-1.5 font-mono text-[11px] text-zinc-400"
+      className="inline-flex items-baseline gap-1.5 font-mono text-[11px] text-muted-foreground"
     >
-      <span className="text-zinc-500">
+      <span>
         {ORDER_TYPE_LABEL[order.orderType]} {directionGlyph(order)}
       </span>
-      <span className={order.exitReason === 'take_profit' ? 'text-emerald-300' : 'text-zinc-300'}>
+      <span className={order.exitReason === 'take_profit' ? 'text-positive' : 'text-foreground'}>
         {exitLabel}
       </span>
       <span>{fmtPrice(order.fillPrice ?? order.orderPrice)}</span>
-      <span className={won ? 'text-emerald-300' : 'text-rose-300'}>{fmtMoney(order.pnl)}</span>
+      <span className={won ? 'text-positive' : 'text-destructive'}>{fmtMoney(order.pnl)}</span>
     </span>
   )
 }
@@ -103,19 +102,19 @@ export default function TradingPanel(): React.JSX.Element {
   const closed = orders.filter((o) => o.status === 'closed')
 
   return (
-    <div className="border-t border-zinc-800 bg-zinc-900/60 px-4 py-2.5">
+    <div className="border-t border-border bg-card px-4 py-2.5">
       {menuOpen && <NewOrderMenu onClose={() => setMenuOpen(false)} />}
 
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-        <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+        <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
           Trading
         </span>
 
         <div className="flex items-baseline gap-1.5">
-          <span className="text-[11px] text-zinc-500">Balance</span>
+          <span className="text-[11px] text-muted-foreground">Balance</span>
           <span
             data-testid="trading-balance"
-            className="font-mono text-sm font-semibold text-zinc-100"
+            className="font-mono text-sm font-semibold text-foreground"
           >
             $
             {balance.toLocaleString('en-US', {
@@ -131,36 +130,39 @@ export default function TradingPanel(): React.JSX.Element {
           disabled={!session}
           onClick={() => setMenuOpen(true)}
         >
-          <Plus /> New Order
+          <Plus data-icon="inline-start" /> New Order
         </Button>
 
         {selectedDrawing ? (
-          <span
+          <Badge
             data-testid="selected-position"
-            className="inline-flex items-center gap-1.5 rounded-md border border-sky-500/30 bg-sky-500/10 px-2 py-1 font-mono text-[11px] text-sky-200"
+            variant="outline"
+            className="h-auto items-baseline gap-1.5 rounded-md border-chart-2/40 bg-chart-2/10 px-2 py-1 font-mono text-[11px] font-normal text-chart-2"
           >
-            <span className="text-[9px] font-sans font-semibold uppercase tracking-wide text-sky-300">
+            <span className="text-[9px] font-sans font-semibold uppercase tracking-wide">
               Selected
             </span>
             <span>{selectedDrawing.direction === 'long' ? '▲' : '▼'}</span>
             <span>{fmtPrice(selectedDrawing.entryPrice)}</span>
-            <span className="text-sky-400/60">SL {fmtPrice(selectedDrawing.stopLoss)}</span>
-            <span className="text-sky-400/60">TP {fmtPrice(selectedDrawing.takeProfit)}</span>
-            <button
+            <span className="opacity-70">SL {fmtPrice(selectedDrawing.stopLoss)}</span>
+            <span className="opacity-70">TP {fmtPrice(selectedDrawing.takeProfit)}</span>
+            <Button
               data-testid="clear-selection"
               onClick={() => setSelectedDrawing(null)}
-              className="ml-1 rounded p-0.5 text-sky-400/70 transition-colors hover:bg-sky-500/20 hover:text-sky-200"
+              className="ml-1 h-auto w-auto rounded-sm p-0.5 text-current hover:bg-chart-2/20 hover:text-chart-2 dark:hover:bg-chart-2/20"
+              variant="ghost"
+              size="icon-xs"
               aria-label="Clear selection (New Order falls back to manual)"
               title="Clear selection"
             >
-              <X className="size-3" />
-            </button>
-          </span>
+              <X />
+            </Button>
+          </Badge>
         ) : (
-          <span className="text-[11px] text-zinc-600">No position tool selected</span>
+          <span className="text-[11px] text-muted-foreground">No position tool selected</span>
         )}
 
-        <div className="ml-auto flex items-center gap-3 text-[11px] text-zinc-500">
+        <div className="ml-auto flex items-center gap-3 text-[11px] text-muted-foreground">
           <span data-testid="pending-count">{pending.length} pending</span>
           <span data-testid="active-count">{active.length} active</span>
           <span data-testid="closed-count">{closed.length} closed</span>
@@ -179,21 +181,21 @@ export default function TradingPanel(): React.JSX.Element {
       )}
 
       {closed.length > 0 && (
-        <div
-          data-testid="closed-orders"
-          className="mt-2 flex flex-wrap gap-x-4 gap-y-1 border-t border-zinc-800/70 pt-2"
-        >
-          <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-600">
-            Recent closes
-          </span>
-          {closed.slice(-6).map((o) => (
-            <ClosedRow key={o.id} order={o} />
-          ))}
+        <div data-testid="closed-orders" className="mt-2">
+          <Separator className="mb-2" />
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              Recent closes
+            </span>
+            {closed.slice(-6).map((o) => (
+              <ClosedRow key={o.id} order={o} />
+            ))}
+          </div>
         </div>
       )}
 
       {session && orders.length === 0 && (
-        <p data-testid="orders-empty" className="mt-2 text-[11px] text-zinc-600">
+        <p data-testid="orders-empty" className="mt-2 text-[11px] text-muted-foreground">
           Place a Long/Short Position tool on the chart, click it to select, then New Order — or go
           manual.
         </p>

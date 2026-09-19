@@ -1,6 +1,40 @@
 import { useMemo, useState } from 'react'
-import { AlertTriangle, Download, X } from 'lucide-react'
+import { AlertTriangle, CalendarIcon, Download } from 'lucide-react'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { Calendar } from '@/components/ui/calendar'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
+import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput
+} from '@/components/ui/input-group'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { formatDateUtc, parseDateUtc } from '@/lib/dates'
+import {
+  NativeSelect,
+  NativeSelectOptGroup,
+  NativeSelectOption
+} from '@/components/ui/native-select'
+import { Progress } from '@/components/ui/progress'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
 import { ASSETS, ASSET_BY_ID } from '@shared/assets'
 import type { Asset } from '@shared/assets'
 import { TIMEFRAMES, TIMEFRAME_LABELS, type Timeframe } from '@shared/timeframes'
@@ -15,14 +49,6 @@ import { useSessionStore } from '@/store/session'
  */
 
 const CATEGORIES = Array.from(new Set(ASSETS.map((a) => a.category)))
-
-function fieldCls(): string {
-  return 'w-full rounded-md border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 text-sm text-zinc-100 outline-none focus:border-sky-500'
-}
-
-function labelCls(): string {
-  return 'mb-1 block text-[11px] font-medium uppercase tracking-wide text-zinc-500'
-}
 
 export interface NewSessionModalProps {
   open: boolean
@@ -44,6 +70,9 @@ export default function NewSessionModal({
   const [startDate, setStartDate] = useState('2024-01-02')
   const [endDate, setEndDate] = useState('2024-01-31')
   const [balanceStr, setBalanceStr] = useState('100000')
+  // Popover visibility per date field — closed once a day is picked.
+  const [fromOpen, setFromOpen] = useState(false)
+  const [toOpen, setToOpen] = useState(false)
 
   // NOTE: the form is intentionally NOT reset here — App remounts this modal
   // with a fresh `key` on every open, so state starts at the defaults above.
@@ -57,8 +86,6 @@ export default function NewSessionModal({
     return !!asset && Number.isFinite(s) && Number.isFinite(e) && e >= s && balance > 0
   }, [asset, startDate, endDate, balance])
 
-  if (!open) return null
-
   const handleStart = async (): Promise<void> => {
     if (!valid || !asset) return
     await startSession({ asset, timeframe, startDate, endDate, balance })
@@ -71,46 +98,35 @@ export default function NewSessionModal({
   const latest = progress[progress.length - 1]
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label="New session"
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        // Lock the dialog shut while the download is running.
+        if (!next && status !== 'downloading') onClose()
+      }}
     >
-      <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-900 p-5 shadow-2xl">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-sm font-semibold tracking-tight text-zinc-100">
-            New backtest session
-          </h2>
-          <button
-            onClick={onClose}
-            disabled={status === 'downloading'}
-            className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40"
-            aria-label="Close"
-          >
-            <X className="size-4" />
-          </button>
-        </div>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>New backtest session</DialogTitle>
+          <DialogDescription>
+            Download every timeframe for the range in one batch — cached locally for reuse.
+          </DialogDescription>
+        </DialogHeader>
 
         {status === 'downloading' ? (
           /* -------- Loading state: progress streamed over IPC -------- */
-          <div className="space-y-3">
-            <p className="text-xs text-zinc-400">
+          <div className="flex flex-col gap-3">
+            <p className="text-xs text-muted-foreground">
               Downloading {asset?.label ?? assetId} {timeframe} · {startDate} → {endDate}
             </p>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-800">
-              <div
-                className="h-full rounded-full bg-sky-500 transition-all duration-300"
-                style={{ width: `${latest?.percent ?? 0}%` }}
-              />
-            </div>
-            <p className="font-mono text-xs text-zinc-300">
+            <Progress value={latest?.percent ?? 0} />
+            <p className="font-mono text-xs text-foreground">
               {latest?.message ?? 'Starting…'}
               {latest?.percent !== undefined && (
-                <span className="text-zinc-500"> ({latest.percent}%)</span>
+                <span className="text-muted-foreground"> ({latest.percent}%)</span>
               )}
             </p>
-            <ul className="max-h-28 space-y-0.5 overflow-y-auto font-mono text-[11px] text-zinc-500">
+            <ul className="flex max-h-28 flex-col gap-0.5 overflow-y-auto font-mono text-[11px] text-muted-foreground">
               {progress.slice(0, -1).map((event, i) => (
                 <li key={i}>{event.message}</li>
               ))}
@@ -118,130 +134,189 @@ export default function NewSessionModal({
           </div>
         ) : status === 'error' ? (
           /* -------- Download failed -------- */
-          <div className="space-y-3">
-            <div className="flex items-start gap-2 rounded-md border border-rose-500/30 bg-rose-500/10 p-3">
-              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-rose-400" />
-              <p className="text-xs leading-relaxed text-rose-200">{error}</p>
-            </div>
-            <div className="flex justify-end gap-2">
+          <>
+            <Alert variant="destructive">
+              <AlertTriangle className="size-4 shrink-0" />
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+            <DialogFooter>
               <Button variant="outline" size="sm" onClick={onClose}>
                 Cancel
               </Button>
-              <Button
-                size="sm"
-                className="bg-sky-600 text-white hover:bg-sky-500"
-                onClick={dismissError}
-              >
+              <Button size="sm" onClick={dismissError}>
                 Try again
               </Button>
-            </div>
-          </div>
+            </DialogFooter>
+          </>
         ) : (
           /* -------- The form -------- */
-          <div className="space-y-3.5">
-            <div>
-              <label className={labelCls()}>Asset</label>
-              <select
-                className={fieldCls()}
-                value={assetId}
-                onChange={(e) => setAssetId(e.target.value)}
-              >
-                {CATEGORIES.map((category) => (
-                  <optgroup key={category} label={category}>
-                    {ASSETS.filter((a) => a.category === category).map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.label}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-              <p className="mt-1 text-[11px] text-zinc-500">
-                {asset?.category} · Dukascopy id <code className="text-zinc-400">{assetId}</code>
-              </p>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className={labelCls()}>Chart timeframe</label>
-                <select
-                  className={fieldCls()}
-                  value={timeframe}
-                  onChange={(e) => setTimeframe(e.target.value as Timeframe)}
+          <>
+            <FieldGroup className="gap-4">
+              <Field>
+                <FieldLabel>Asset</FieldLabel>
+                <NativeSelect
+                  value={assetId}
+                  onChange={(e) => setAssetId(e.target.value)}
+                  className="w-full"
                 >
-                  {TIMEFRAMES.map((tf) => (
-                    <option key={tf} value={tf}>
-                      {TIMEFRAME_LABELS[tf]}
-                    </option>
+                  {CATEGORIES.map((category) => (
+                    <NativeSelectOptGroup key={category} label={category}>
+                      {ASSETS.filter((a) => a.category === category).map((a) => (
+                        <NativeSelectOption key={a.id} value={a.id}>
+                          {a.label}
+                        </NativeSelectOption>
+                      ))}
+                    </NativeSelectOptGroup>
                   ))}
-                </select>
-                <p className="mt-1 text-[11px] text-zinc-500">
-                  Initial view — every timeframe is downloaded, switch on the chart anytime. The
-                  previous 24 hours of candles are pre-loaded as run-up context, so the chart starts
-                  with a full day of price action instead of a blank screen.
+                </NativeSelect>
+                <FieldDescription>
+                  {asset?.category} · Dukascopy id{' '}
+                  <code className="text-foreground">{assetId}</code>
+                </FieldDescription>
+              </Field>
+
+              <div className="grid grid-cols-2 gap-3">
+                <Field>
+                  <FieldLabel>Chart timeframe</FieldLabel>
+                  <Select value={timeframe} onValueChange={(v) => setTimeframe(v as Timeframe)}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Select timeframe" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        {TIMEFRAMES.map((tf) => (
+                          <SelectItem key={tf} value={tf}>
+                            {TIMEFRAME_LABELS[tf]}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <FieldDescription>
+                    Initial view — every timeframe is downloaded, switch on the chart anytime. The
+                    previous 24 hours of candles are pre-loaded as run-up context, so the chart
+                    starts with a full day of price action instead of a blank screen.
+                  </FieldDescription>
+                </Field>
+                <Field>
+                  <FieldLabel>Starting balance ($)</FieldLabel>
+                  <Input
+                    type="number"
+                    min={1}
+                    step={500}
+                    value={balanceStr}
+                    onChange={(e) => setBalanceStr(e.target.value)}
+                  />
+                </Field>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <Field>
+                  <FieldLabel>From</FieldLabel>
+                  {/* Text input (typed entry) + shadcn Calendar in a popover —
+                      no native date picker popup. */}
+                  <Popover open={fromOpen} onOpenChange={setFromOpen}>
+                    <InputGroup>
+                      <InputGroupInput
+                        id="ns-date-from"
+                        value={startDate}
+                        onChange={(e) => setStartDate(e.target.value)}
+                        placeholder="YYYY-MM-DD"
+                        maxLength={10}
+                      />
+                      <InputGroupAddon align="inline-end">
+                        <PopoverTrigger asChild>
+                          <InputGroupButton
+                            size="icon-sm"
+                            variant="ghost"
+                            aria-label="Pick start date from calendar"
+                          >
+                            <CalendarIcon />
+                          </InputGroupButton>
+                        </PopoverTrigger>
+                      </InputGroupAddon>
+                    </InputGroup>
+                    <PopoverContent className="w-auto p-0" align="start">
+                      <Calendar
+                        mode="single"
+                        captionLayout="dropdown"
+                        startMonth={new Date(2015, 0, 1)}
+                        endMonth={new Date(new Date().getFullYear() + 1, 11, 31)}
+                        selected={parseDateUtc(startDate)}
+                        defaultMonth={parseDateUtc(startDate) ?? new Date()}
+                        onSelect={(day) => {
+                          const next = formatDateUtc(day)
+                          if (next) setStartDate(next)
+                          setFromOpen(false)
+                        }}
+                      />
+                    </PopoverContent>
+                  </Popover>
+                </Field>
+                <Field>
+                  <FieldLabel>To</FieldLabel>
+                  <Popover open={toOpen} onOpenChange={setToOpen}>
+                    <InputGroup>
+                      <InputGroupInput
+                        id="ns-date-to"
+                        value={endDate}
+                        onChange={(e) => setEndDate(e.target.value)}
+                        placeholder="YYYY-MM-DD"
+                        maxLength={10}
+                      />
+                      <InputGroupAddon align="inline-end">
+                        <PopoverTrigger asChild>
+                          <InputGroupButton
+                            size="icon-sm"
+                            variant="ghost"
+                            aria-label="Pick end date from calendar"
+                          >
+                            <CalendarIcon />
+                          </InputGroupButton>
+                        </PopoverTrigger>
+                      </InputGroupAddon>
+                    </InputGroup>
+                    <PopoverContent className="w-auto p-0" align="start">
+                      <Calendar
+                        mode="single"
+                        captionLayout="dropdown"
+                        startMonth={new Date(2015, 0, 1)}
+                        endMonth={new Date(new Date().getFullYear() + 1, 11, 31)}
+                        selected={parseDateUtc(endDate)}
+                        defaultMonth={
+                          parseDateUtc(endDate) ?? parseDateUtc(startDate) ?? new Date()
+                        }
+                        onSelect={(day) => {
+                          const next = formatDateUtc(day)
+                          if (next) setEndDate(next)
+                          setToOpen(false)
+                        }}
+                      />
+                    </PopoverContent>
+                  </Popover>
+                </Field>
+              </div>
+
+              {!valid && (
+                <p className="text-xs text-destructive">
+                  {balance <= 0
+                    ? 'Starting balance must be greater than 0.'
+                    : 'Range must be valid and start on or before the end date.'}
                 </p>
-              </div>
-              <div>
-                <label className={labelCls()}>Starting balance ($)</label>
-                <input
-                  type="number"
-                  min={1}
-                  step={500}
-                  className={fieldCls()}
-                  value={balanceStr}
-                  onChange={(e) => setBalanceStr(e.target.value)}
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className={labelCls()}>From</label>
-                <input
-                  id="ns-date-from"
-                  type="date"
-                  className={fieldCls()}
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                />
-              </div>
-              <div>
-                <label className={labelCls()}>To</label>
-                <input
-                  id="ns-date-to"
-                  type="date"
-                  className={fieldCls()}
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                />
-              </div>
-            </div>
-
-            {!valid && (
-              <p className="text-[11px] text-rose-300">
-                {balance <= 0
-                  ? 'Starting balance must be greater than 0.'
-                  : 'Range must be valid and start on or before the end date.'}
-              </p>
-            )}
-
-            <div className="flex justify-end gap-2 pt-1">
+              )}
+            </FieldGroup>
+            <DialogFooter>
               <Button variant="outline" size="sm" onClick={onClose}>
                 Cancel
               </Button>
-              <Button
-                size="sm"
-                className="bg-sky-600 text-white hover:bg-sky-500"
-                disabled={!valid}
-                onClick={handleStart}
-              >
-                <Download className="size-3.5" />
+              <Button size="sm" disabled={!valid} onClick={handleStart}>
+                <Download data-icon="inline-start" />
                 Start Session
               </Button>
-            </div>
-          </div>
+            </DialogFooter>
+          </>
         )}
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   )
 }

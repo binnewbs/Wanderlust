@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
+  Calendar as CalendarIcon,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -9,8 +10,29 @@ import {
   SkipBack,
   SkipForward
 } from 'lucide-react'
-import { DropdownMenu } from 'radix-ui'
+import { cn } from 'cn'
 import { Button } from '@/components/ui/button'
+import { Calendar } from '@/components/ui/calendar'
+import { Checkbox } from '@/components/ui/checkbox'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
+import { Field, FieldLabel } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import { Slider } from '@/components/ui/slider'
 import {
   indexAtOrAfter,
   sessionBaseCandles,
@@ -19,6 +41,7 @@ import {
   useSessionStore
 } from '@/store/session'
 import { lastSltpCloseIndex } from '@/store/trading'
+import { formatDateUtc, parseDateUtc } from '@/lib/dates'
 
 /**
  * Playback control panel (Phase 4 wires the loop).
@@ -154,6 +177,7 @@ export default function PlaybackPanel(): React.JSX.Element {
 
   const [gotoDate, setGotoDate] = useState('')
   const [gotoMenuOpen, setGotoMenuOpen] = useState(false)
+  const [calendarOpen, setCalendarOpen] = useState(false)
 
   // Go-back flow dialogs. Every backward move funnels through `attemptBackward`:
   //  - while a position is OPEN a dialog offers Close Now / Nevermind (closing
@@ -307,27 +331,27 @@ export default function PlaybackPanel(): React.JSX.Element {
   const enabled = session !== null
   // Backward moves are locked while a position is open — close it first.
   const inPosition = orders.some((order) => order.status === 'filled')
-  const ctlCls =
-    'inline-flex items-center justify-center rounded-md border border-zinc-700 bg-zinc-900 p-2 text-zinc-300 disabled:cursor-not-allowed disabled:opacity-40'
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-zinc-800 bg-zinc-900/80 px-4 py-2.5">
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-border bg-card px-4 py-2.5">
       <div className="flex items-center gap-1.5">
-        <span className="mr-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+        <span className="mr-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           Playback
         </span>
 
-        <button
-          className={ctlCls}
+        <Button
+          variant="outline"
+          size="icon"
           disabled={!enabled}
           onClick={() => attemptBackward(skipToStart, 0)}
           title={inPosition ? 'You must close your position first' : 'Skip to start'}
           aria-label="Skip to start"
         >
-          <SkipBack className="size-4" />
-        </button>
-        <button
-          className={ctlCls}
+          <SkipBack />
+        </Button>
+        <Button
+          variant="outline"
+          size="icon"
           disabled={!enabled}
           onClick={() =>
             attemptBackward(
@@ -339,16 +363,13 @@ export default function PlaybackPanel(): React.JSX.Element {
           title={inPosition ? 'You must close your position first' : 'Step back'}
           aria-label="Step back"
         >
-          <ChevronLeft className="size-4" />
-        </button>
+          <ChevronLeft />
+        </Button>
 
         <Button
           size="sm"
           data-testid="playback-play"
-          className={
-            'mx-1 min-w-[84px] text-white disabled:opacity-40 ' +
-            (playing ? 'bg-amber-600 hover:bg-amber-500' : 'bg-sky-600 hover:bg-sky-500')
-          }
+          className="mx-1 min-w-[84px] disabled:opacity-40"
           disabled={!enabled}
           onClick={() => {
             // Restarting from the end is a rewind to candle 0 — route it
@@ -361,118 +382,166 @@ export default function PlaybackPanel(): React.JSX.Element {
           }}
           title={playing ? 'Pause' : 'Play'}
         >
-          {playing ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
+          {playing ? <Pause /> : <Play />}
           {playing ? 'Pause' : 'Play'}
         </Button>
 
-        <button
-          className={ctlCls}
+        <Button
+          variant="outline"
+          size="icon"
           disabled={!enabled}
           onClick={stepForward}
           data-testid="playback-step"
           title="Step forward"
           aria-label="Step forward"
         >
-          <ChevronRight className="size-4" />
-        </button>
-        <button
-          className={ctlCls}
+          <ChevronRight />
+        </Button>
+        <Button
+          variant="outline"
+          size="icon"
           disabled={!enabled}
           onClick={skipToEnd}
           title="Skip to end"
           aria-label="Skip to end"
         >
-          <SkipForward className="size-4" />
-        </button>
+          <SkipForward />
+        </Button>
       </div>
 
       <div className="flex items-center gap-5">
-        <DropdownMenu.Root open={gotoMenuOpen} onOpenChange={setGotoMenuOpen}>
-          <DropdownMenu.Trigger asChild>
-            <button
-              className="inline-flex items-center gap-1 rounded-md border border-sky-700/70 bg-sky-500/10 px-2 py-1 text-xs font-medium text-sky-200 hover:bg-sky-500/20 disabled:opacity-40"
+        <DropdownMenu
+          open={gotoMenuOpen}
+          onOpenChange={(next) => {
+            setGotoMenuOpen(next)
+            if (!next) setCalendarOpen(false)
+          }}
+        >
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1"
               disabled={!enabled || currentTime === undefined}
               data-testid="playback-session-goto-btn"
             >
               Go To
-              <ChevronDown className="size-3.5" />
-            </button>
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Portal>
-            <DropdownMenu.Content
-              align="end"
-              sideOffset={4}
-              className="z-50 min-w-56 rounded-md border border-zinc-700 bg-zinc-900 p-1 shadow-xl"
-            >
+              <ChevronDown />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-64">
+            <DropdownMenuGroup>
               {JUMP_TARGETS.map((target) => (
-                <DropdownMenu.Item
+                <DropdownMenuItem
                   key={target.value}
                   disabled={!enabled}
                   onSelect={() => goToSessionTarget(target.value)}
-                  className="flex cursor-default select-none items-center rounded-md px-2 py-1.5 text-xs text-zinc-300 outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-40 data-[highlighted]:bg-zinc-800 data-[highlighted]:text-zinc-100"
                 >
                   {target.label}
-                </DropdownMenu.Item>
+                </DropdownMenuItem>
               ))}
+            </DropdownMenuGroup>
 
-              <DropdownMenu.Separator className="my-1 h-px bg-zinc-800" />
+            <DropdownMenuSeparator />
 
-              <div className="space-y-1.5 px-2 pb-2 pt-1.5">
-                <span className="block text-[10px] font-medium uppercase tracking-wider text-zinc-500">
-                  Custom Date
+            <DropdownMenuGroup>
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault()
+                  setCalendarOpen((prev) => !prev)
+                }}
+                className="cursor-pointer justify-between"
+              >
+                <span className="flex items-center gap-2">
+                  <CalendarIcon />
+                  <span>Custom Date</span>
                 </span>
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="date"
-                    data-testid="playback-goto-date"
-                    value={gotoDate}
-                    min={session?.startDate}
-                    max={session?.endDate}
-                    onChange={(e) => setGotoDate(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        goTo()
-                      }
-                    }}
-                    className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-300 outline-none"
-                  />
-                  <button
-                    className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
-                    disabled={!enabled || !gotoDate}
-                    onClick={goTo}
-                    data-testid="playback-goto-btn"
-                  >
-                    Go
-                  </button>
-                </div>
+                <ChevronDown
+                  className={cn('transition-transform duration-200', calendarOpen && 'rotate-180')}
+                />
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
+
+            <div className="flex flex-col gap-2 p-1.5 pt-0.5">
+              <div className="flex items-center gap-1.5">
+                <Input
+                  type="text"
+                  data-testid="playback-goto-date"
+                  value={gotoDate}
+                  placeholder="YYYY-MM-DD"
+                  maxLength={10}
+                  onChange={(e) => setGotoDate(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      goTo()
+                    }
+                  }}
+                  className="h-7 min-w-0 flex-1 text-xs"
+                />
+                <Button
+                  size="xs"
+                  disabled={!enabled || !gotoDate}
+                  onClick={goTo}
+                  data-testid="playback-goto-btn"
+                >
+                  Go
+                </Button>
               </div>
-            </DropdownMenu.Content>
-          </DropdownMenu.Portal>
-        </DropdownMenu.Root>
+
+              {calendarOpen && (
+                <div className="pt-1">
+                  <Calendar
+                    mode="single"
+                    captionLayout="dropdown"
+                    className="mx-auto rounded-md border border-border/50 bg-background/50 p-2"
+                    selected={parseDateUtc(gotoDate)}
+                    defaultMonth={
+                      parseDateUtc(gotoDate) ?? parseDateUtc(session?.startDate ?? '') ?? new Date()
+                    }
+                    startMonth={parseDateUtc(session?.startDate ?? '') ?? new Date(2020, 0, 1)}
+                    endMonth={parseDateUtc(session?.endDate ?? '') ?? new Date()}
+                    disabled={(day) => {
+                      const start = parseDateUtc(session?.startDate ?? '')
+                      const end = parseDateUtc(session?.endDate ?? '')
+                      if (start && day < start) return true
+                      if (end && day > end) return true
+                      return false
+                    }}
+                    onSelect={(day) => {
+                      const next = formatDateUtc(day)
+                      if (next) setGotoDate(next)
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          </DropdownMenuContent>
+        </DropdownMenu>
 
         <div className="flex items-center gap-2">
-          <Gauge className="size-3.5 text-zinc-600" />
-          <input
-            type="range"
+          <Gauge className="size-3.5 text-muted-foreground" />
+          <Slider
+            data-testid="playback-speed"
+            className="w-32 [&_[data-slot='slider-track']]:bg-muted-foreground/20 [&_[data-slot='slider-range']]:bg-chart-2 [&_[data-slot='slider-thumb']]:border-chart-2 [&_[data-slot='slider-thumb']]:ring-chart-2/40"
             min={1}
             max={120}
-            data-testid="playback-speed"
-            value={speed}
+            step={1}
+            value={[speed]}
+            onValueChange={(v) => setSpeed(v[0] ?? 1)}
             disabled={!enabled}
-            onChange={(e) => setSpeed(Number(e.target.value))}
-            className="w-32 accent-sky-500 disabled:opacity-40"
+            aria-label="Playback speed"
             title="Playback speed"
           />
-          <span className="w-14 text-right font-mono text-xs text-zinc-400">{speed}×</span>
+          <span className="w-14 text-right font-mono text-xs text-muted-foreground">{speed}×</span>
         </div>
 
-        <div className="text-right font-mono text-xs text-zinc-400">
+        <div className="text-right font-mono text-xs text-muted-foreground">
           <div>
             <span data-testid="playback-index">{currentIndex}</span>/
             <span data-testid="playback-total">{totalCandles}</span> candles
           </div>
-          <div data-testid="playback-time" className="text-[10px] text-zinc-500">
+          <div data-testid="playback-time" className="text-[10px] text-muted-foreground">
             {formatUtc(currentTime)}
           </div>
         </div>
@@ -480,81 +549,68 @@ export default function PlaybackPanel(): React.JSX.Element {
 
       {/* Go-back while a position is open: offer to close it first. */}
       {closeDialogOpen && pendingBack !== null && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Open position blocks going back"
+        <Dialog
+          open
+          onOpenChange={(next) => {
+            if (!next) cancelCloseNow()
+          }}
         >
-          <div className="w-full max-w-sm rounded-lg border border-zinc-800 bg-zinc-900 p-5 shadow-2xl">
-            <h2 className="text-sm font-semibold tracking-tight text-zinc-100">
-              You&apos;re still in a position
-            </h2>
-            <p className="mt-2 text-xs leading-relaxed text-zinc-400">
-              Going back requires closing your position first. Close it now at the current market
-              price, or stay where you are.
-            </p>
-            <div className="mt-5 flex justify-end gap-2">
-              <button
-                onClick={cancelCloseNow}
-                className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
-              >
+          <DialogContent showCloseButton={false} className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>You&apos;re still in a position</DialogTitle>
+              <DialogDescription>
+                Going back requires closing your position first. Close it now at the current market
+                price, or stay where you are.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={cancelCloseNow}>
                 Nevermind
-              </button>
-              <button
-                onClick={confirmCloseNow}
-                data-testid="rewind-close-now"
-                className="rounded-md border border-sky-700/70 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-200 hover:bg-sky-500/20"
-              >
+              </Button>
+              <Button onClick={confirmCloseNow} data-testid="rewind-close-now">
                 Close Now
-              </button>
-            </div>
-          </div>
-        </div>
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
 
       {/* Rewind warning: going back erases the positions (and PnL) taken. */}
       {warnDialogOpen && pendingBack !== null && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Rewind warning"
+        <Dialog
+          open
+          onOpenChange={(next) => {
+            if (!next) cancelWarnRewind()
+          }}
         >
-          <div className="w-full max-w-sm rounded-lg border border-zinc-800 bg-zinc-900 p-5 shadow-2xl">
-            <h2 className="text-sm font-semibold tracking-tight text-zinc-100">Going back</h2>
-            <p className="mt-2 text-xs leading-relaxed text-zinc-400">
-              If you go back, the positions you took will be gone — the account rewinds to before
-              those trades and their PnL disappears.
-            </p>
-            <label className="mt-4 flex cursor-pointer items-start gap-2">
-              <input
-                type="checkbox"
+          <DialogContent showCloseButton={false} className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Going back</DialogTitle>
+              <DialogDescription>
+                If you go back, the positions you took will be gone — the account rewinds to before
+                those trades and their PnL disappears.
+              </DialogDescription>
+            </DialogHeader>
+            <Field orientation="horizontal" className="items-start gap-2">
+              <Checkbox
+                id="rewind-skip-warning"
                 checked={warnChecked}
-                onChange={(e) => setWarnChecked(e.target.checked)}
-                className="mt-0.5 accent-sky-500"
+                onCheckedChange={(c) => setWarnChecked(c === true)}
               />
-              <span className="text-xs text-zinc-400">
+              <FieldLabel htmlFor="rewind-skip-warning" className="font-normal">
                 Don&apos;t show this dialog for the rest of this session
-              </span>
-            </label>
-            <div className="mt-5 flex justify-end gap-2">
-              <button
-                onClick={cancelWarnRewind}
-                className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
-              >
+              </FieldLabel>
+            </Field>
+            <DialogFooter>
+              <Button variant="outline" onClick={cancelWarnRewind}>
                 Stay here
-              </button>
-              <button
-                onClick={confirmWarnRewind}
-                data-testid="rewind-confirm"
-                className="rounded-md border border-amber-700/70 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-200 hover:bg-amber-500/20"
-              >
+              </Button>
+              <Button onClick={confirmWarnRewind} data-testid="rewind-confirm">
                 Go Back
-              </button>
-            </div>
-          </div>
-        </div>
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   )

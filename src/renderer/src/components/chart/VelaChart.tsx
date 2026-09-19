@@ -297,13 +297,17 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
       // one press on H1 reveals one H1 bar, not one hidden M1 bar.
       useSessionStore
         .getState()
-        .setPlaybackTimeframe(dukascopyTimeframe(chart.market.timeframe ?? velaTimeframe(timeframe)) as Timeframe)
+        .setPlaybackTimeframe(
+          dukascopyTimeframe(chart.market.timeframe ?? velaTimeframe(timeframe)) as Timeframe
+        )
       restoreManualScales(chart, pendingPriceScales)
       pushSlice()
     })
     useSessionStore
       .getState()
-      .setPlaybackTimeframe(dukascopyTimeframe(chart.market.timeframe ?? velaTimeframe(timeframe)) as Timeframe)
+      .setPlaybackTimeframe(
+        dukascopyTimeframe(chart.market.timeframe ?? velaTimeframe(timeframe)) as Timeframe
+      )
     // Frame the initial reveal (index 0 → blank replay surface).
     pushSlice()
 

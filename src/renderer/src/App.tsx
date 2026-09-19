@@ -1,6 +1,16 @@
 import { useState } from 'react'
 import { Activity, PlayCircle, Plus, X } from 'lucide-react'
+import { Alert, AlertAction, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle
+} from '@/components/ui/empty'
 import { useSessionStore } from '@/store/session'
 import VelaChart from '@/components/chart/VelaChart'
 import NewSessionModal from '@/components/session/NewSessionModal'
@@ -21,10 +31,12 @@ import TradingPanel from '@/components/session/TradingPanel'
  * tick-by-tick fill/exit evaluation during playback.
  */
 
+// Data-source colors use the theme's categorical chart tokens (semantic, not
+// raw palette values) so they adapt to light/dark under the b0 neutral theme.
 const sourceStyles: Record<string, string> = {
-  cache: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300',
-  dukascopy: 'border-sky-500/40 bg-sky-500/10 text-sky-300',
-  mixed: 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+  cache: 'border-chart-2/40 bg-chart-2/10 text-chart-2',
+  dukascopy: 'border-chart-4/40 bg-chart-4/10 text-chart-4',
+  mixed: 'border-chart-5/40 bg-chart-5/10 text-chart-5'
 }
 
 export default function App(): React.JSX.Element {
@@ -52,27 +64,26 @@ export default function App(): React.JSX.Element {
   const sessionSource = session ? (session.sources[session.timeframe] ?? 'cache') : 'cache'
 
   return (
-    <div className="flex h-full flex-col bg-zinc-950 text-zinc-100">
+    <div className="flex h-full flex-col bg-background text-foreground">
       {/* Header */}
-      <header className="flex items-center justify-between border-b border-zinc-800 px-5 py-3">
+      <header className="flex items-center justify-between border-b border-border px-5 py-3">
         <div className="flex items-center gap-2.5">
-          <Activity className="size-5 text-sky-400" />
+          <Activity className="size-5 text-primary" />
           <h1 className="text-base font-semibold tracking-tight">Wanderlust</h1>
-          <span className="rounded-full border border-zinc-700 px-2 py-0.5 text-[10px] font-medium text-zinc-400">
-            Phase 5 · replay, orders & account
-          </span>
+          <Badge variant="secondary">Phase 5 · replay, orders & account</Badge>
           {session && (
-            <span className="ml-1 hidden items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900 px-2.5 py-0.5 text-[11px] text-zinc-400 sm:flex">
-              <span className="font-semibold text-zinc-200">{session.asset.label}</span>
+            <span className="ml-1 hidden items-center gap-2 rounded-full border border-border bg-card px-2.5 py-0.5 text-[11px] text-muted-foreground sm:flex">
+              <span className="font-semibold text-foreground">{session.asset.label}</span>
               <span>{session.timeframe}</span>
               <span>
                 {session.startDate} → {session.endDate}
               </span>
-              <span
-                className={`rounded-full border px-1.5 py-px text-[9px] font-medium uppercase ${sourceStyles[sessionSource] ?? ''}`}
+              <Badge
+                variant="outline"
+                className={`px-1.5 py-px text-[9px] font-medium uppercase ${sourceStyles[sessionSource] ?? ''}`}
               >
                 {sessionSource}
-              </span>
+              </Badge>
             </span>
           )}
         </div>
@@ -80,18 +91,14 @@ export default function App(): React.JSX.Element {
           {session && (
             <span
               data-testid="header-balance"
-              className="font-mono text-xs text-zinc-400"
+              className="font-mono text-xs text-muted-foreground"
               title="Live account balance"
             >
               ${balance.toLocaleString('en-US', { maximumFractionDigits: 2 })}
             </span>
           )}
-          <Button
-            onClick={openModal}
-            size="sm"
-            className="bg-sky-600 text-xs text-white hover:bg-sky-500"
-          >
-            <Plus className="size-3.5" />
+          <Button onClick={openModal} size="sm">
+            <Plus data-icon="inline-start" />
             New Session
           </Button>
         </div>
@@ -99,16 +106,19 @@ export default function App(): React.JSX.Element {
 
       {/* Download error surfaced outside the modal (e.g. a background failure). */}
       {error && status === 'error' && !modalOpen && (
-        <div className="flex items-center justify-between gap-3 border-b border-rose-500/30 bg-rose-500/10 px-5 py-2">
-          <p className="text-xs text-rose-200">{error}</p>
-          <button
-            onClick={dismissError}
-            className="rounded p-1 text-rose-300 hover:bg-rose-500/10"
-            aria-label="Dismiss error"
-          >
-            <X className="size-3.5" />
-          </button>
-        </div>
+        <Alert variant="destructive" className="rounded-none border-x-0 border-t-0">
+          <AlertDescription>{error}</AlertDescription>
+          <AlertAction>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={dismissError}
+              aria-label="Dismiss error"
+            >
+              <X />
+            </Button>
+          </AlertAction>
+        </Alert>
       )}
 
       {/* Main area */}
@@ -116,8 +126,8 @@ export default function App(): React.JSX.Element {
         {session ? (
           <div className="absolute inset-0 flex flex-col">
             {/* Session info strip (shown when the header chip is too small) */}
-            <div className="flex items-center gap-4 border-b border-zinc-800/60 px-5 py-1.5 text-[11px] text-zinc-500 sm:hidden">
-              <span className="font-semibold text-zinc-200">{session.asset.label}</span>
+            <div className="flex items-center gap-4 border-b border-border/60 px-5 py-1.5 text-[11px] text-muted-foreground sm:hidden">
+              <span className="font-semibold text-foreground">{session.asset.label}</span>
               <span>{session.timeframe}</span>
               <span>
                 {session.startDate} → {session.endDate}
@@ -135,22 +145,24 @@ export default function App(): React.JSX.Element {
           </div>
         ) : (
           /* -------- Empty state -------- */
-          <div className="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">
-            <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
-              <PlayCircle className="size-10 text-sky-500" />
-            </div>
-            <div>
-              <h2 className="text-base font-semibold text-zinc-200">No session yet</h2>
-              <p className="mx-auto mt-1 max-w-sm text-sm text-zinc-500">
+          <Empty className="h-full">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <PlayCircle />
+              </EmptyMedia>
+              <EmptyTitle>No session yet</EmptyTitle>
+              <EmptyDescription>
                 Download a market range from Dukascopy (cached locally for reuse) and replay it on
                 the chart. Your data stays on this machine.
-              </p>
-            </div>
-            <Button onClick={openModal} className="bg-sky-600 text-white hover:bg-sky-500">
-              <Plus className="size-4" />
-              Start a new backtest session
-            </Button>
-          </div>
+              </EmptyDescription>
+            </EmptyHeader>
+            <EmptyContent>
+              <Button onClick={openModal}>
+                <Plus data-icon="inline-start" />
+                Start a new backtest session
+              </Button>
+            </EmptyContent>
+          </Empty>
         )}
       </main>
 

@@ -23,14 +23,14 @@ npm run dev
 
 Other scripts:
 
-| Script | Purpose |
-| --- | --- |
-| `npm run dev` | Start the Electron app in development (HMR enabled) |
-| `npm run build` | Typecheck + build main / preload / renderer into `out/` |
-| `npm run typecheck` | Typecheck main (`tsconfig.node.json`) + renderer (`tsconfig.web.json`) |
-| `npm run lint` / `npm run format` | ESLint / Prettier |
-| `npm run rebuild` | Rebuild `better-sqlite3` against Electron's ABI (only needed after Node/Electron upgrades) |
-| `npm run build:linux` / `build:win` / `build:mac` | Package with electron-builder |
+| Script                                            | Purpose                                                                                    |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `npm run dev`                                     | Start the Electron app in development (HMR enabled)                                        |
+| `npm run build`                                   | Typecheck + build main / preload / renderer into `out/`                                    |
+| `npm run typecheck`                               | Typecheck main (`tsconfig.node.json`) + renderer (`tsconfig.web.json`)                     |
+| `npm run lint` / `npm run format`                 | ESLint / Prettier                                                                          |
+| `npm run rebuild`                                 | Rebuild `better-sqlite3` against Electron's ABI (only needed after Node/Electron upgrades) |
+| `npm run build:linux` / `build:win` / `build:mac` | Package with electron-builder                                                              |
 
 ## Project Layout
 
@@ -71,14 +71,15 @@ src/
 
 Exposed to the renderer as `window.api` via the preload bridge:
 
-| Channel | Direction | Purpose |
-| --- | --- | --- |
-| `data:download` | renderer → main | Cache-first download of a range (`window.api.downloadData`) |
-| `data:get-cached` | renderer → main | Query candles already cached (`window.api.getCachedData`) |
-| `data:cache-summary` | renderer → main | List cached (symbol, timeframe) ranges (`window.api.getCacheSummary`) |
+| Channel                  | Direction       | Purpose                                                                      |
+| ------------------------ | --------------- | ---------------------------------------------------------------------------- |
+| `data:download`          | renderer → main | Cache-first download of a range (`window.api.downloadData`)                  |
+| `data:get-cached`        | renderer → main | Query candles already cached (`window.api.getCachedData`)                    |
+| `data:cache-summary`     | renderer → main | List cached (symbol, timeframe) ranges (`window.api.getCacheSummary`)        |
 | `data:download-progress` | main → renderer | Progress events streamed while downloading (`window.api.onDownloadProgress`) |
 
 `window.api.downloadData(request)` returns either:
+
 - a `DownloadResult` (`{ ok, candles, source, ... }`, `source` is `'cache'` for a fully cached range, `'dukascopy'` when all fetched this call, or `'mixed'` when cached days were reused) when `request` names a single `timeframe`; or
 - a `DownloadBatchResult` (`{ ok, timeframes: [{ timeframe, candles, source }], totalCandles }`) when `request.timeframes` lists several (the session always download all of m1…d1 in one batch; progress is scaled across the batch).
 

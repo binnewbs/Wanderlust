@@ -82,12 +82,7 @@ function formatMoney(amount: number): string {
 }
 
 function pnlAt(order: Order, entry: number, size: number, price: number): number {
-  if (
-    !Number.isFinite(entry) ||
-    !Number.isFinite(size) ||
-    !Number.isFinite(price)
-  )
-    return 0
+  if (!Number.isFinite(entry) || !Number.isFinite(size) || !Number.isFinite(price)) return 0
   return (price - entry) * size * (order.direction === 'long' ? 1 : -1)
 }
 
@@ -501,9 +496,7 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
             data-order-id={spec.orderId}
             className={`absolute left-0 right-0 opacity-0 ${
               interactive ? 'pointer-events-auto' : ''
-            } ${
-              draggable ? 'cursor-ns-resize' : ''
-            }`}
+            } ${draggable ? 'cursor-ns-resize' : ''}`}
             style={{ height: STRIP_HALF * 2, touchAction: draggable ? 'none' : undefined }}
             onPointerDown={draggable ? (e) => onDragDown(e, spec) : undefined}
             onPointerMove={draggable ? (e) => onDragMove(e, spec) : undefined}
