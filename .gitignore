@@ -13,3 +13,5 @@ plan.md
 *.db-journal
 *.db-wal
 *.db-shm
+# TS build cache artifact (electron-vite generates it on every build)
+tsconfig.web.tsbuildinfo
