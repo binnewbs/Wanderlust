@@ -103,9 +103,3 @@ src/
 ├── preload/    # contextBridge — exposes the typed window.api to the renderer
 └── renderer/   # React app: sessions, chart, playback, trading, analytics
 ```
-
-Notes for contributors:
-
-- **shadcn/ui layout.** The CLI can't auto-detect electron-vite's folder layout; `components.json` is maintained manually (it maps `@/*` → `src/renderer/src/*`). When adding components, move the generated files into `src/renderer/src/components/` afterward.
-- **Native modules.** `better-sqlite3` and `lzma-native` are compiled against Electron's ABI. `npm install` runs `electron-builder install-app-deps` automatically; run `npm run rebuild` manually after upgrading Electron or Node.
-- **npm 12 script blocking.** npm 12+ may block `electron`'s binary download. If `npm run dev` fails with "Electron failed to install correctly", run `npm install-scripts approve electron` and reinstall.
