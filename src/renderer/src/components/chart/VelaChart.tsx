@@ -365,6 +365,28 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
       }
     }
 
+    // --- Chart-state auto-save (Phase 7) ---
+    // Keep the persisted snapshot fresh while the user works: Vela emits
+    // `state:changed` (debounced ~500ms) on every persisted edit — drawing
+    // placed/moved/removed, chart settings tweaked — and we flush once more on
+    // page unload. Between these, a hard app close from the chart view still
+    // restores the latest workspace on the next launch.
+    const saveSnapshot = (): void => {
+      if (!sessionId) return
+      try {
+        const st = useSessionStore.getState()
+        const snapshot = workspace.getState()
+        if (snapshot) st.saveChartState(sessionId, snapshot)
+        const selected = st.selectedDrawing?.drawingId
+        if (selected) st.saveChartSelection(sessionId, selected)
+      } catch {
+        // the workspace may already be gone — skip the snapshot
+      }
+    }
+    const unsubStateSave = workspace.on('state:changed', saveSnapshot)
+    const onPageUnload = (): void => saveSnapshot()
+    window.addEventListener('beforeunload', onPageUnload)
+
     // --- Hash-gated E2E handle: lets the E2E inject a position drawing and
     // select it exactly as the toolbar would. Inert (untyped) to normal users.
     const w = window as unknown as { __wanderlust?: Record<string, unknown> }
@@ -406,6 +428,8 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
     }
 
     return () => {
+      window.removeEventListener('beforeunload', onPageUnload)
+      unsubStateSave()
       unsubSelected()
       unsubEdited()
       unsubRemoved()
@@ -414,18 +438,9 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
       // Snapshot the workspace BEFORE it is destroyed — the drawings and the
       // adjusted chart settings (timeframe, price style, renderer config,
       // indicator ledger) get stashed per session, so returning from the main
-      // menu restores them instead of booting a blank chart.
-      if (sessionId) {
-        try {
-          const st = useSessionStore.getState()
-          const snapshot = workspace.getState()
-          if (snapshot) st.saveChartState(sessionId, snapshot)
-          const selected = st.selectedDrawing?.drawingId
-          if (selected) st.saveChartSelection(sessionId, selected)
-        } catch {
-          // the workspace may already be gone — skip the snapshot
-        }
-      }
+      // menu (or relaunching the app) restores them instead of booting a
+      // blank chart.
+      saveSnapshot()
       if (w.__wanderlust) delete w.__wanderlust
       useSessionStore.getState().setSelectedDrawing(null)
       velaChartRef.current = null

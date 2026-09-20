@@ -17,7 +17,7 @@ export default function KpiGrid({ kpis, balance, startBalance }: KpiGridProps): 
       {/* 1. Expectancy */}
       <Card size="sm" className="bg-card/70 backdrop-blur-xs animate-in fade-in slide-in-from-bottom-2 duration-200 fill-mode-backwards" style={{ '--tw-animation-delay': '0ms' } as React.CSSProperties}>
         <CardHeader className="flex flex-row items-center justify-between pb-1">
-          <CardTitle className="text-[11px] font-semibold tracking-wider uppercase text-muted-foreground">
+          <CardTitle className="text-[11px] font-semibold tracking-wider capitalize text-foreground">
             Expectancy
           </CardTitle>
           <Target className="size-3.5 text-muted-foreground" />
@@ -41,8 +41,8 @@ export default function KpiGrid({ kpis, balance, startBalance }: KpiGridProps): 
       {/* 2. Profit Factor */}
       <Card size="sm" className="bg-card/70 backdrop-blur-xs animate-in fade-in slide-in-from-bottom-2 duration-200 fill-mode-backwards" style={{ '--tw-animation-delay': '45ms' } as React.CSSProperties}>
         <CardHeader className="flex flex-row items-center justify-between pb-1">
-          <CardTitle className="text-[11px] font-semibold tracking-wider uppercase text-muted-foreground">
-            Profit Factor
+          <CardTitle className="text-[11px] font-semibold tracking-wider capitalize text-foreground">
+            Profit factor
           </CardTitle>
           <Scale className="size-3.5 text-muted-foreground" />
         </CardHeader>
@@ -65,7 +65,7 @@ export default function KpiGrid({ kpis, balance, startBalance }: KpiGridProps): 
       {/* 3. Average RR */}
       <Card size="sm" className="bg-card/70 backdrop-blur-xs animate-in fade-in slide-in-from-bottom-2 duration-200 fill-mode-backwards" style={{ '--tw-animation-delay': '90ms' } as React.CSSProperties}>
         <CardHeader className="flex flex-row items-center justify-between pb-1">
-          <CardTitle className="text-[11px] font-semibold tracking-wider uppercase text-muted-foreground">
+          <CardTitle className="text-[11px] font-semibold tracking-wider capitalize text-foreground">
             Avg RR
           </CardTitle>
           <Award className="size-3.5 text-muted-foreground" />
@@ -81,8 +81,8 @@ export default function KpiGrid({ kpis, balance, startBalance }: KpiGridProps): 
       {/* 4. Win Rate */}
       <Card size="sm" className="bg-card/70 backdrop-blur-xs animate-in fade-in slide-in-from-bottom-2 duration-200 fill-mode-backwards" style={{ '--tw-animation-delay': '135ms' } as React.CSSProperties}>
         <CardHeader className="flex flex-row items-center justify-between pb-1">
-          <CardTitle className="text-[11px] font-semibold tracking-wider uppercase text-muted-foreground">
-            Win Rate
+          <CardTitle className="text-[11px] font-semibold tracking-wider capitalize text-foreground">
+            Win rate
           </CardTitle>
           <TrendingUp className="size-3.5 text-muted-foreground" />
         </CardHeader>
@@ -103,8 +103,8 @@ export default function KpiGrid({ kpis, balance, startBalance }: KpiGridProps): 
       {/* 5. Max Drawdown */}
       <Card size="sm" className="bg-card/70 backdrop-blur-xs animate-in fade-in slide-in-from-bottom-2 duration-200 fill-mode-backwards" style={{ '--tw-animation-delay': '180ms' } as React.CSSProperties}>
         <CardHeader className="flex flex-row items-center justify-between pb-1">
-          <CardTitle className="text-[11px] font-semibold tracking-wider uppercase text-muted-foreground">
-            Max Drawdown
+          <CardTitle className="text-[11px] font-semibold tracking-wider capitalize text-foreground">
+            Max drawdown
           </CardTitle>
           <ShieldAlert className="size-3.5 text-muted-foreground" />
         </CardHeader>
@@ -121,7 +121,7 @@ export default function KpiGrid({ kpis, balance, startBalance }: KpiGridProps): 
       {/* 6. Net Profit & Balance */}
       <Card size="sm" className="bg-card/70 backdrop-blur-xs animate-in fade-in slide-in-from-bottom-2 duration-200 fill-mode-backwards" style={{ '--tw-animation-delay': '225ms' } as React.CSSProperties}>
         <CardHeader className="flex flex-row items-center justify-between pb-1">
-          <CardTitle className="text-[11px] font-semibold tracking-wider uppercase text-muted-foreground">
+          <CardTitle className="text-[11px] font-semibold tracking-wider capitalize text-foreground">
             Net PnL
           </CardTitle>
           <Wallet className="size-3.5 text-muted-foreground" />

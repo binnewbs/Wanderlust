@@ -154,7 +154,8 @@ export interface SessionState {
 
   // --- chart-state persistence (Phase 7) ---
   /** Stash a Vela workspace snapshot (drawings + adjusted chart settings) for
-   *  a session, taken just before its workspace is destroyed. */
+   *  a session. Saved continuously as the user edits, and persisted so a
+   *  reopened session resumes the chart where it left off. */
   saveChartState: (id: string, state: unknown) => void
   /** The workspace snapshot stashed for `id`, or undefined. */
   chartStateFor: (id: string) => unknown | undefined
@@ -249,14 +250,60 @@ export function stepIndexForTimeframe(
 }
 
 const SESSIONS_STORAGE_KEY = 'wanderlust_saved_sessions'
+const CHART_STATES_STORAGE_KEY = 'wanderlust_chart_states'
 const activeSessionsCache = new Map<string, ActiveSession>()
-// Per-instance Vela workspace snapshots (drawings + adjusted chart settings),
-// keyed by session id — they survive the round trip through the main menu and
-// die with the app instance, exactly like the active-session candle cache.
-const savedChartStates = new Map<string, unknown>()
-// The position drawing that was selected when the user left the session, so a
-// resume can re-assert it on the restored chart.
-const savedChartSelections = new Map<string, string>()
+
+/** The localStorage document for chart-state persistence: workspace snapshots
+ *  plus the last-selected position drawing, both keyed by session id. */
+interface ChartStatesDocument {
+  states?: Record<string, unknown>
+  selections?: Record<string, string>
+}
+
+function loadChartStatesFromStorage(): {
+  states: Map<string, unknown>
+  selections: Map<string, string>
+} {
+  const states = new Map<string, unknown>()
+  const selections = new Map<string, string>()
+  if (typeof window === 'undefined' || !window.localStorage) return { states, selections }
+  try {
+    const doc = JSON.parse(
+      window.localStorage.getItem(CHART_STATES_STORAGE_KEY) ?? 'null'
+    ) as ChartStatesDocument | null
+    for (const [id, state] of Object.entries(doc?.states ?? {})) {
+      if (state && typeof state === 'object') states.set(id, state)
+    }
+    for (const [id, sel] of Object.entries(doc?.selections ?? {})) {
+      if (typeof sel === 'string' && sel.length > 0) selections.set(id, sel)
+    }
+  } catch {
+    // corrupt payload — start fresh
+  }
+  return { states, selections }
+}
+
+// Vela workspace snapshots (drawings + adjusted chart settings), keyed by
+// session id. Survive the round trip through the main menu AND a full app
+// restart (they are persisted to localStorage) — a reopened session resumes
+// the chart exactly where it left off.
+const { states: savedChartStates, selections: savedChartSelections } =
+  loadChartStatesFromStorage()
+
+function persistChartStatesToStorage(): void {
+  if (typeof window === 'undefined' || !window.localStorage) return
+  try {
+    const states: Record<string, unknown> = {}
+    for (const [id, state] of savedChartStates) states[id] = state
+    const selections: Record<string, string> = {}
+    for (const [id, sel] of savedChartSelections) selections[id] = sel
+    const doc: ChartStatesDocument = { states, selections }
+    window.localStorage.setItem(CHART_STATES_STORAGE_KEY, JSON.stringify(doc))
+  } catch {
+    // quota / serialization failure — the in-memory copies still serve this
+    // app instance
+  }
+}
 
 function loadSavedSessionsFromStorage(): SavedSession[] {
   if (typeof window === 'undefined' || !window.localStorage) return []
@@ -978,6 +1025,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     activeSessionsCache.delete(id)
     savedChartStates.delete(id)
     savedChartSelections.delete(id)
+    persistChartStatesToStorage()
     const updated = get().savedSessions.filter((s) => s.id !== id)
     persistSavedSessionsToStorage(updated)
     if (get().session?.id === id) {
@@ -1056,13 +1104,36 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   saveChartState: (id, state) => {
     savedChartStates.set(id, state)
+    persistChartStatesToStorage()
   },
   chartStateFor: (id) => savedChartStates.get(id),
   saveChartSelection: (id, drawingId) => {
     savedChartSelections.set(id, drawingId)
+    persistChartStatesToStorage()
   },
   chartSelectionFor: (id) => savedChartSelections.get(id)
 }))
+
+// Drop chart-state snapshots for sessions that no longer exist (deleted
+// sessions, or leftovers from an older build) — the persisted document stays
+// honest and localStorage stays small.
+{
+  const valid = new Set(useSessionStore.getState().savedSessions.map((s) => s.id))
+  let changed = false
+  for (const id of [...savedChartStates.keys()]) {
+    if (!valid.has(id)) {
+      savedChartStates.delete(id)
+      changed = true
+    }
+  }
+  for (const id of [...savedChartSelections.keys()]) {
+    if (!valid.has(id)) {
+      savedChartSelections.delete(id)
+      changed = true
+    }
+  }
+  if (changed) persistChartStatesToStorage()
+}
 
 // Stream main-process download progress into the store while a download runs.
 // Module scope (not a React effect) so StrictMode's double-mount never

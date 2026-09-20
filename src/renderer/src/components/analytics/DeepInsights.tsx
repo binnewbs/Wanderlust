@@ -25,7 +25,7 @@ export default function DeepInsights({ kpis, dayStats }: DeepInsightsProps): Rea
         {/* Consecutive Streaks */}
         <Card size="sm" className="bg-card/70 backdrop-blur-xs">
           <CardHeader className="flex flex-row items-center justify-between pb-1">
-            <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            <CardTitle className="text-xs font-semibold tracking-wider capitalize text-foreground">
               Streaks
             </CardTitle>
             <Flame className="size-4 text-muted-foreground" />
@@ -64,8 +64,8 @@ export default function DeepInsights({ kpis, dayStats }: DeepInsightsProps): Rea
         {/* Holding Time */}
         <Card size="sm" className="bg-card/70 backdrop-blur-xs">
           <CardHeader className="flex flex-row items-center justify-between pb-1">
-            <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Avg Holding Time
+            <CardTitle className="text-xs font-semibold tracking-wider capitalize text-foreground">
+              Avg holding time
             </CardTitle>
             <Clock className="size-4 text-muted-foreground" />
           </CardHeader>
@@ -82,8 +82,8 @@ export default function DeepInsights({ kpis, dayStats }: DeepInsightsProps): Rea
         {/* Best Win & Worst Loss */}
         <Card size="sm" className="bg-card/70 backdrop-blur-xs">
           <CardHeader className="flex flex-row items-center justify-between pb-1">
-            <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Best & Worst
+            <CardTitle className="text-xs font-semibold tracking-wider capitalize text-foreground">
+              Best & worst
             </CardTitle>
             <Trophy className="size-4 text-muted-foreground" />
           </CardHeader>
@@ -110,8 +110,8 @@ export default function DeepInsights({ kpis, dayStats }: DeepInsightsProps): Rea
         {/* Breakeven Trades */}
         <Card size="sm" className="bg-card/70 backdrop-blur-xs">
           <CardHeader className="flex flex-row items-center justify-between pb-1">
-            <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Breakeven Trades
+            <CardTitle className="text-xs font-semibold tracking-wider capitalize text-foreground">
+              Breakeven trades
             </CardTitle>
             <MinusCircle className="size-4 text-muted-foreground" />
           </CardHeader>
