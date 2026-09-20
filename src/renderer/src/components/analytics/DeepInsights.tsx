@@ -8,15 +8,88 @@ import {
   type KpiMetrics
 } from '@/lib/analytics'
 import { Calendar, Clock, Flame, Trophy, TrendingDown, MinusCircle } from 'lucide-react'
+import { Bar, BarChart, XAxis, YAxis, type YAxisTickContentProps } from 'recharts'
+import { ChartContainer, ChartTooltip, type ChartConfig } from '@/components/ui/chart'
 
 interface DeepInsightsProps {
   kpis: KpiMetrics
   dayStats: DayOfWeekStat[]
 }
 
+const chartConfig = {
+  pnl: { label: 'PnL' }
+} satisfies ChartConfig
+
+interface DayTooltipRow {
+  dayName: string
+  pnl: number
+  tradesCount: number
+  winRate: number
+}
+
+function DayTooltipBody({ row }: { row: DayTooltipRow }): React.JSX.Element {
+  return (
+    <div className="grid gap-1.5 rounded-lg border border-border/50 bg-background px-3 py-2 text-xs shadow-xl">
+      <div className="font-medium text-foreground">{row.dayName}</div>
+      <div className="flex items-center justify-between gap-8">
+        <span className="text-muted-foreground">PnL</span>
+        <span
+          className={`font-mono font-medium ${row.pnl >= 0 ? 'text-chart-2' : 'text-destructive'}`}
+        >
+          {formatCurrency(row.pnl)}
+        </span>
+      </div>
+      <div className="flex items-center justify-between gap-8">
+        <span className="text-muted-foreground">{row.tradesCount === 1 ? 'Trade' : 'Trades'}</span>
+        <span className="font-mono font-medium text-foreground">{row.tradesCount}</span>
+      </div>
+      <div className="flex items-center justify-between gap-8">
+        <span className="text-muted-foreground">Win Rate</span>
+        <span className="font-mono font-medium text-foreground">{row.winRate.toFixed(0)}%</span>
+      </div>
+    </div>
+  )
+}
+
+function DayPerformanceTooltip({
+  active,
+  payload
+}: {
+  active?: boolean
+  payload?: ReadonlyArray<{ payload?: DayTooltipRow }>
+}): React.JSX.Element | null {
+  if (!active || !payload?.length) {
+    return null
+  }
+
+  const row = payload[0]?.payload
+  if (!row) {
+    return null
+  }
+
+  return <DayTooltipBody row={row} />
+}
+
 export default function DeepInsights({ kpis, dayStats }: DeepInsightsProps): React.JSX.Element {
-  // Find max absolute day PnL for scaling the bar width
-  const maxDayAbs = Math.max(...dayStats.map((d) => Math.abs(d.pnl)), 100)
+  const chartData = dayStats.map((stat) => ({
+    dayName: stat.dayName,
+    pnl: stat.pnl,
+    value: stat.pnl > 0 ? stat.pnl : 0,
+    tradesCount: stat.tradesCount,
+    winRate: stat.winRate
+  }))
+
+  // Hovering the day name on the Y axis shows the tooltip for that day, since
+  // losing days don't render a bar (value clamped to 0) and are otherwise
+  // unreachable by hovering the plot area.
+  const [hoveredDay, setHoveredDay] = React.useState<{
+    dayName: string
+    x: number
+    y: number
+  } | null>(null)
+  const hoveredStat = hoveredDay
+    ? (chartData.find((d) => d.dayName === hoveredDay.dayName) ?? null)
+    : null
 
   return (
     <div className="flex flex-col gap-4">
@@ -153,51 +226,83 @@ export default function DeepInsights({ kpis, dayStats }: DeepInsightsProps): Rea
           </div>
         </CardHeader>
         <CardContent>
-          <div className="flex flex-col gap-3">
-            {dayStats.map((stat) => {
-              const isProfit = stat.pnl >= 0
-              const barPercent = Math.min(100, Math.max(8, (Math.abs(stat.pnl) / maxDayAbs) * 100))
-
-              return (
-                <div key={stat.dayIndex} className="flex items-center gap-4 text-xs">
-                  {/* Day label */}
-                  <div className="w-24 font-medium text-foreground">{stat.dayName}</div>
-
-                  {/* Visual PnL bar */}
-                  <div className="flex-1">
-                    <div className="h-5 w-full rounded-md bg-muted/40 relative overflow-hidden flex items-center px-2">
-                      <div
-                        className={`absolute inset-y-0 left-0 rounded-md transition-all duration-300 ${
-                          stat.tradesCount === 0
-                            ? 'bg-transparent'
-                            : isProfit
-                              ? 'bg-chart-2/25 border-r-2 border-chart-2'
-                              : 'bg-destructive/25 border-r-2 border-destructive'
-                        }`}
-                        style={{ width: stat.tradesCount === 0 ? '0%' : `${barPercent}%` }}
-                      />
-                      <div className="relative z-10 flex items-center justify-between w-full font-mono text-[11px]">
-                        <span className="text-muted-foreground">
-                          {stat.tradesCount} {stat.tradesCount === 1 ? 'trade' : 'trades'} ·{' '}
-                          {stat.winRate.toFixed(0)}% WR
-                        </span>
-                        <span
-                          className={`font-semibold ${
-                            stat.tradesCount === 0
-                              ? 'text-muted-foreground'
-                              : isProfit
-                                ? 'text-chart-2'
-                                : 'text-destructive'
-                          }`}
+          <div className="relative">
+            <ChartContainer config={chartConfig} className="h-[220px] w-full">
+              <BarChart
+                accessibilityLayer
+                data={chartData}
+                layout="vertical"
+                margin={{ left: 0, right: 12 }}
+              >
+                <XAxis
+                  type="number"
+                  dataKey="value"
+                  tickLine={false}
+                  axisLine={false}
+                  tickMargin={8}
+                  tickFormatter={(value) => formatCurrency(Number(value))}
+                />
+                <YAxis
+                  type="category"
+                  dataKey="dayName"
+                  width={84}
+                  tickLine={false}
+                  axisLine={false}
+                  tickMargin={10}
+                  tick={(props: YAxisTickContentProps) => {
+                    const { x, y, payload, textAnchor } = props
+                    const day = chartData.find((d) => d.dayName === String(payload.value))
+                    const isLosingDay = day != null && day.pnl < 0
+                    const dayName = String(payload.value)
+                    const tickX = Number(x)
+                    const tickY = Number(y)
+                    return (
+                      <g>
+                        <text
+                          x={x}
+                          y={y}
+                          dy="0.355em"
+                          textAnchor={textAnchor}
+                          style={{ fill: isLosingDay ? 'var(--destructive)' : props.fill }}
                         >
-                          {stat.tradesCount === 0 ? '$0.00' : formatCurrency(stat.pnl)}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
+                          {dayName}
+                        </text>
+                        {/* Invisible hitbox: covers the whole label column and most of
+                            the row band, so the tooltip is easy to trigger. */}
+                        <rect
+                          x={tickX - 90}
+                          y={tickY - 22}
+                          width={102}
+                          height={44}
+                          fill="transparent"
+                          pointerEvents="all"
+                          onMouseEnter={() => setHoveredDay({ dayName, x: tickX, y: tickY })}
+                          onMouseLeave={() =>
+                            setHoveredDay((current) =>
+                              current?.dayName === dayName ? null : current
+                            )
+                          }
+                        />
+                      </g>
+                    )
+                  }}
+                />
+                <ChartTooltip cursor={false} content={<DayPerformanceTooltip />} />
+                <Bar dataKey="value" fill="var(--color-chart-2)" radius={4} barSize={12} />
+              </BarChart>
+            </ChartContainer>
+            {hoveredDay != null && hoveredStat != null && (
+              <div
+                className="pointer-events-none absolute z-10"
+                style={{
+                  left: hoveredDay.x + 12,
+                  top: hoveredDay.y,
+                  transform: 'translateY(-50%)'
+                }}
+              >
+                <DayTooltipBody row={hoveredStat} />
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
