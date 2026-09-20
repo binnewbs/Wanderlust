@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { AlertTriangle, CalendarIcon, Download } from 'lucide-react'
+import { cn } from 'cn'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
@@ -46,6 +47,13 @@ import { useSessionStore } from '@/store/session'
  */
 
 const CATEGORIES = Array.from(new Set(ASSETS.map((a) => a.category)))
+
+/**
+ * The chart-timeframe picker is currently hidden: a future feature lets the
+ * user pick WHICH timeframes to download and use. Flip this to `true` to
+ * re-enable the picker block below.
+ */
+const TIMEFRAME_PICKER_ENABLED = false
 
 export interface NewSessionModalProps {
   open: boolean
@@ -149,7 +157,10 @@ export default function NewSessionModal({
         ) : status === 'error' ? (
           /* -------- Download failed -------- */
           <>
-            <Alert variant="destructive" className="animate-in fade-in slide-in-from-top-1 duration-200">
+            <Alert
+              variant="destructive"
+              className="animate-in fade-in slide-in-from-top-1 duration-200"
+            >
               <AlertTriangle className="size-4 shrink-0" />
               <AlertDescription>{error}</AlertDescription>
             </Alert>
@@ -207,29 +218,36 @@ export default function NewSessionModal({
                 </FieldDescription>
               </Field>
 
-              <div className="grid grid-cols-2 gap-3">
-                <Field>
-                  <FieldLabel>Chart timeframe</FieldLabel>
-                  <Select value={timeframe} onValueChange={(v) => setTimeframe(v as Timeframe)}>
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="Select timeframe" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        {TIMEFRAMES.map((tf) => (
-                          <SelectItem key={tf} value={tf}>
-                            {TIMEFRAME_LABELS[tf]}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                  <FieldDescription>
-                    Initial view — every timeframe is downloaded, switch on the chart anytime. The
-                    previous 24 hours of candles are pre-loaded as run-up context, so the chart
-                    starts with a full day of price action instead of a blank screen.
-                  </FieldDescription>
-                </Field>
+              <div
+                className={cn(
+                  'grid gap-3',
+                  TIMEFRAME_PICKER_ENABLED ? 'grid-cols-2' : 'grid-cols-1'
+                )}
+              >
+                {TIMEFRAME_PICKER_ENABLED && (
+                  <Field>
+                    <FieldLabel>Chart timeframe</FieldLabel>
+                    <Select value={timeframe} onValueChange={(v) => setTimeframe(v as Timeframe)}>
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select timeframe" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          {TIMEFRAMES.map((tf) => (
+                            <SelectItem key={tf} value={tf}>
+                              {TIMEFRAME_LABELS[tf]}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <FieldDescription>
+                      Initial view — every timeframe is downloaded, switch on the chart anytime. The
+                      previous 24 hours of candles are pre-loaded as run-up context, so the chart
+                      starts with a full day of price action instead of a blank screen.
+                    </FieldDescription>
+                  </Field>
+                )}
                 <Field>
                   <FieldLabel>Starting balance ($)</FieldLabel>
                   <Input
