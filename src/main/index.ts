@@ -24,6 +24,10 @@ function createWindow(): void {
     }
   })
 
+  // `autoHideMenuBar` only hides the menu bar; pressing Alt still reveals it.
+  // Removing the menu entirely prevents the Alt key from summoning it.
+  mainWindow.removeMenu()
+
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
   })
