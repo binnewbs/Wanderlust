@@ -1,6 +1,7 @@
-import React, { useMemo } from 'react'
+import React, { useMemo, useState } from 'react'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
+import { cn } from 'cn'
 import { useSessionStore } from '@/store/session'
 import {
   calculateKpiMetrics,
@@ -17,6 +18,22 @@ import { BarChart3, TrendingUp, Calendar, BookOpen } from 'lucide-react'
 
 interface AnalyticsViewProps {
   onBackToChart?: () => void
+}
+
+/** Tab order → moving right slides content in from the right, and vice versa. */
+const TAB_ORDER = ['overview', 'insights', 'calendar', 'journal']
+
+function tabContentClassName(
+  direction: 'left' | 'right',
+  base: string
+): string {
+  return cn(
+    base,
+    'data-[state=active]:animate-in data-[state=active]:fade-in data-[state=active]:duration-200',
+    direction === 'right'
+      ? 'data-[state=active]:slide-in-from-right-2'
+      : 'data-[state=active]:slide-in-from-left-2'
+  )
 }
 
 export default function AnalyticsView({
@@ -40,6 +57,15 @@ export default function AnalyticsView({
   }, [orders])
 
   const isProfitable = kpis.netProfit >= 0
+
+  const [tab, setTab] = useState('overview')
+  const [slideDir, setSlideDir] = useState<'left' | 'right'>('right')
+  const selectTab = (value: string): void => {
+    const prev = TAB_ORDER.indexOf(tab)
+    const next = TAB_ORDER.indexOf(value)
+    setSlideDir(prev >= 0 && next < prev ? 'left' : 'right')
+    setTab(value)
+  }
 
   return (
     <div className="flex h-full w-full flex-col overflow-y-auto bg-background p-6">
@@ -78,7 +104,7 @@ export default function AnalyticsView({
       </div>
 
       {/* Analytics Tabs View */}
-      <Tabs defaultValue="overview" className="flex-1">
+      <Tabs value={tab} onValueChange={selectTab} className="flex-1">
         <TabsList className="mb-4">
           <TabsTrigger value="overview" className="gap-1.5 text-xs">
             <BarChart3 className="size-3.5" />
@@ -101,7 +127,7 @@ export default function AnalyticsView({
         {/* TAB 1: Overview */}
         <TabsContent
           value="overview"
-          className="flex flex-col gap-4 focus-visible:outline-hidden data-[state=active]:animate-in data-[state=active]:fade-in data-[state=active]:slide-in-from-bottom-1 data-[state=active]:duration-200"
+          className={tabContentClassName(slideDir, 'flex flex-col gap-4 focus-visible:outline-hidden')}
         >
           <KpiGrid kpis={kpis} balance={balance} startBalance={startBalance} />
           <EquityChart data={equityCurve} startBalance={startBalance} />
@@ -110,7 +136,7 @@ export default function AnalyticsView({
         {/* TAB 2: Deep Insights */}
         <TabsContent
           value="insights"
-          className="focus-visible:outline-hidden data-[state=active]:animate-in data-[state=active]:fade-in data-[state=active]:slide-in-from-bottom-1 data-[state=active]:duration-200"
+          className={tabContentClassName(slideDir, 'focus-visible:outline-hidden')}
         >
           <DeepInsights kpis={kpis} dayStats={dayStats} />
         </TabsContent>
@@ -118,7 +144,7 @@ export default function AnalyticsView({
         {/* TAB 3: Calendar PnL */}
         <TabsContent
           value="calendar"
-          className="focus-visible:outline-hidden data-[state=active]:animate-in data-[state=active]:fade-in data-[state=active]:slide-in-from-bottom-1 data-[state=active]:duration-200"
+          className={tabContentClassName(slideDir, 'focus-visible:outline-hidden')}
         >
           <CalendarPnl orders={orders} defaultDate={session?.startDate} />
         </TabsContent>
@@ -126,7 +152,7 @@ export default function AnalyticsView({
         {/* TAB 4: Trade Journal */}
         <TabsContent
           value="journal"
-          className="focus-visible:outline-hidden data-[state=active]:animate-in data-[state=active]:fade-in data-[state=active]:slide-in-from-bottom-1 data-[state=active]:duration-200"
+          className={tabContentClassName(slideDir, 'focus-visible:outline-hidden')}
         >
           <TradeJournal orders={orders} />
         </TabsContent>

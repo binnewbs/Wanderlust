@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react'
+import React, { useMemo, useState } from 'react'
 import {
   Dialog,
   DialogContent,
@@ -8,6 +8,7 @@ import {
 } from '@/components/ui/dialog'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
+import { cn } from 'cn'
 import { useSessionStore } from '@/store/session'
 import {
   calculateKpiMetrics,
@@ -25,6 +26,22 @@ import { BarChart3, TrendingUp, Calendar, BookOpen } from 'lucide-react'
 interface AnalyticsDialogProps {
   open: boolean
   onClose: () => void
+}
+
+/** Tab order → moving right slides content in from the right, and vice versa. */
+const TAB_ORDER = ['overview', 'insights', 'calendar', 'journal']
+
+function tabContentClassName(
+  direction: 'left' | 'right',
+  base: string
+): string {
+  return cn(
+    base,
+    'data-[state=active]:animate-in data-[state=active]:fade-in data-[state=active]:duration-200',
+    direction === 'right'
+      ? 'data-[state=active]:slide-in-from-right-2'
+      : 'data-[state=active]:slide-in-from-left-2'
+  )
 }
 
 export default function AnalyticsDialog({
@@ -49,6 +66,15 @@ export default function AnalyticsDialog({
   }, [orders])
 
   const isProfitable = kpis.netProfit >= 0
+
+  const [tab, setTab] = useState('overview')
+  const [slideDir, setSlideDir] = useState<'left' | 'right'>('right')
+  const selectTab = (value: string): void => {
+    const prev = TAB_ORDER.indexOf(tab)
+    const next = TAB_ORDER.indexOf(value)
+    setSlideDir(prev >= 0 && next < prev ? 'left' : 'right')
+    setTab(value)
+  }
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -91,7 +117,7 @@ export default function AnalyticsDialog({
         </DialogHeader>
 
         <div className="mt-2 flex flex-col gap-4">
-          <Tabs defaultValue="overview" className="w-full">
+          <Tabs value={tab} onValueChange={selectTab} className="w-full">
             <TabsList className="mb-2">
               <TabsTrigger value="overview" className="gap-1.5 text-xs">
                 <BarChart3 className="size-3.5" />
@@ -114,7 +140,7 @@ export default function AnalyticsDialog({
             {/* TAB 1: Overview */}
             <TabsContent
               value="overview"
-              className="flex flex-col gap-4 focus-visible:outline-hidden data-[state=active]:animate-in data-[state=active]:fade-in data-[state=active]:slide-in-from-bottom-1 data-[state=active]:duration-200"
+              className={tabContentClassName(slideDir, 'flex flex-col gap-4 focus-visible:outline-hidden')}
             >
               <KpiGrid kpis={kpis} balance={balance} startBalance={startBalance} />
               <EquityChart data={equityCurve} startBalance={startBalance} />
@@ -123,7 +149,7 @@ export default function AnalyticsDialog({
             {/* TAB 2: Deep Insights */}
             <TabsContent
               value="insights"
-              className="focus-visible:outline-hidden data-[state=active]:animate-in data-[state=active]:fade-in data-[state=active]:slide-in-from-bottom-1 data-[state=active]:duration-200"
+              className={tabContentClassName(slideDir, 'focus-visible:outline-hidden')}
             >
               <DeepInsights kpis={kpis} dayStats={dayStats} />
             </TabsContent>
@@ -131,7 +157,7 @@ export default function AnalyticsDialog({
             {/* TAB 3: Calendar PnL */}
             <TabsContent
               value="calendar"
-              className="focus-visible:outline-hidden data-[state=active]:animate-in data-[state=active]:fade-in data-[state=active]:slide-in-from-bottom-1 data-[state=active]:duration-200"
+              className={tabContentClassName(slideDir, 'focus-visible:outline-hidden')}
             >
               <CalendarPnl orders={orders} defaultDate={session?.startDate} />
             </TabsContent>
@@ -139,7 +165,7 @@ export default function AnalyticsDialog({
             {/* TAB 4: Trade Journal */}
             <TabsContent
               value="journal"
-              className="focus-visible:outline-hidden data-[state=active]:animate-in data-[state=active]:fade-in data-[state=active]:slide-in-from-bottom-1 data-[state=active]:duration-200"
+              className={tabContentClassName(slideDir, 'focus-visible:outline-hidden')}
             >
               <TradeJournal orders={orders} />
             </TabsContent>
