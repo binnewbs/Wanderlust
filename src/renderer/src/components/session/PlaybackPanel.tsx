@@ -6,6 +6,7 @@ import {
   ChevronRight,
   ChevronUp,
   Gauge,
+  Keyboard,
   Pause,
   Play,
   SkipBack,
@@ -33,6 +34,15 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { Kbd, KbdGroup } from '@/components/ui/kbd'
+import {
+  Popover,
+  PopoverContent,
+  PopoverHeader,
+  PopoverTitle,
+  PopoverTrigger
+} from '@/components/ui/popover'
+import { Separator } from '@/components/ui/separator'
 import { Slider } from '@/components/ui/slider'
 import {
   indexAtOrAfter,
@@ -73,6 +83,38 @@ const JUMP_TARGETS: Array<{ value: JumpTarget; label: string }> = [
   { value: 'new_york', label: 'New York Open' },
   { value: 'asia', label: 'Asian Open' },
   { value: 'london', label: 'London Open' }
+]
+
+/** Keyboard shortcuts listed in the playback-bar hint popover. */
+const SHORTCUTS: Array<{ label: string; keys: React.JSX.Element }> = [
+  { label: 'Play / Pause', keys: <Kbd>Space</Kbd> },
+  {
+    label: 'New Order',
+    keys: (
+      <KbdGroup>
+        <Kbd>Ctrl</Kbd>
+        <Kbd>O</Kbd>
+      </KbdGroup>
+    )
+  },
+  {
+    label: 'Step forward',
+    keys: (
+      <KbdGroup>
+        <Kbd>Ctrl</Kbd>
+        <Kbd>Space</Kbd>
+      </KbdGroup>
+    )
+  },
+  {
+    label: 'Step back',
+    keys: (
+      <KbdGroup>
+        <Kbd>Shift</Kbd>
+        <Kbd>Space</Kbd>
+      </KbdGroup>
+    )
+  }
 ]
 
 interface DateParts {
@@ -368,7 +410,7 @@ export default function PlaybackPanel(): React.JSX.Element {
         </Button>
 
         <Button
-          size="sm"
+          size="default"
           data-testid="playback-play"
           className="mx-1 min-w-[84px] disabled:opacity-40"
           disabled={!enabled}
@@ -415,6 +457,39 @@ export default function PlaybackPanel(): React.JSX.Element {
       </div>
 
       <div className="flex items-center gap-5">
+        {/* Keyboard shortcuts: a button that reveals the list on click. */}
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button
+              variant="outline"
+              size="icon"
+              disabled={!enabled}
+              aria-label="Keyboard shortcuts"
+              title="Keyboard shortcuts"
+              data-testid="shortcut-hints-btn"
+            >
+              <Keyboard />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-60 gap-0.5 p-1.5">
+            <PopoverHeader className="gap-0">
+              <PopoverTitle className="px-2 pt-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Shortcuts
+              </PopoverTitle>
+            </PopoverHeader>
+            <Separator className="my-1" />
+            {SHORTCUTS.map((shortcut) => (
+              <span
+                key={shortcut.label}
+                className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/50"
+              >
+                <span>{shortcut.label}</span>
+                {shortcut.keys}
+              </span>
+            ))}
+          </PopoverContent>
+        </Popover>
+
         <DropdownMenu
           open={gotoMenuOpen}
           onOpenChange={(next) => {

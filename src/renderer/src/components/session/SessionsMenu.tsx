@@ -70,7 +70,7 @@ export default function SessionsMenu({
   return (
     <div className="flex h-full w-full flex-col overflow-y-auto bg-background p-6 sm:p-8">
       {/* Menu Header */}
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-4 border-b border-border/60 pb-5">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-4 pb-3">
         <div>
           <div className="flex items-center gap-2.5">
             <Layers className="size-5 text-primary" />

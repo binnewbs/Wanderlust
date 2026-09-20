@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Plus, X } from 'lucide-react'
 import { cn } from 'cn'
 import { Badge } from '@/components/ui/badge'
@@ -99,6 +99,36 @@ export default function TradingPanel(): React.JSX.Element {
   const selectedDrawing = useSessionStore((s) => s.selectedDrawing)
   const setSelectedDrawing = useSessionStore((s) => s.setSelectedDrawing)
   const [menuOpen, setMenuOpen] = useState(false)
+
+  // Keyboard shortcut: Ctrl+O opens the New Order menu. Mirrors the button's
+  // disabled state (needs a live session) and, like the Space shortcuts in
+  // PlaybackPanel, is ignored while typing in a field or inside an open
+  // overlay so native behavior wins there.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!event.ctrlKey || event.code !== 'KeyO') return
+      if (event.metaKey || event.altKey || event.shiftKey) return
+      const target = event.target as HTMLElement | null
+      const inOverlay =
+        target !== null &&
+        target.closest(
+          '[role="menu"], [role="menuitem"], [role="dialog"], [role="listbox"], [role="option"]'
+        ) !== null
+      const editable =
+        target !== null &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      if (inOverlay || editable) return
+      const st = useSessionStore.getState()
+      if (!st.session) return
+      event.preventDefault()
+      setMenuOpen(true)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   const pending = orders.filter((o) => o.status === 'pending')
   const active = orders.filter((o) => o.status === 'filled')
