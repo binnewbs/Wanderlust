@@ -151,6 +151,18 @@ export interface SessionState {
   resumeSavedSession: (id: string) => Promise<void>
   deleteSavedSession: (id: string) => void
   saveCurrentSessionState: () => void
+
+  // --- chart-state persistence (Phase 7) ---
+  /** Stash a Vela workspace snapshot (drawings + adjusted chart settings) for
+   *  a session, taken just before its workspace is destroyed. */
+  saveChartState: (id: string, state: unknown) => void
+  /** The workspace snapshot stashed for `id`, or undefined. */
+  chartStateFor: (id: string) => unknown | undefined
+  /** Remember which position drawing was selected when the user left the
+   *  session, so a resume re-asserts the New Order affordance. */
+  saveChartSelection: (id: string, drawingId: string) => void
+  /** The selection saved for `id`, or undefined. */
+  chartSelectionFor: (id: string) => string | undefined
 }
 
 /** Candles of the session's initial timeframe — the playback panel's counter. */
@@ -238,6 +250,13 @@ export function stepIndexForTimeframe(
 
 const SESSIONS_STORAGE_KEY = 'wanderlust_saved_sessions'
 const activeSessionsCache = new Map<string, ActiveSession>()
+// Per-instance Vela workspace snapshots (drawings + adjusted chart settings),
+// keyed by session id — they survive the round trip through the main menu and
+// die with the app instance, exactly like the active-session candle cache.
+const savedChartStates = new Map<string, unknown>()
+// The position drawing that was selected when the user left the session, so a
+// resume can re-assert it on the restored chart.
+const savedChartSelections = new Map<string, string>()
 
 function loadSavedSessionsFromStorage(): SavedSession[] {
   if (typeof window === 'undefined' || !window.localStorage) return []
@@ -957,6 +976,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   deleteSavedSession: (id: string) => {
     activeSessionsCache.delete(id)
+    savedChartStates.delete(id)
+    savedChartSelections.delete(id)
     const updated = get().savedSessions.filter((s) => s.id !== id)
     persistSavedSessionsToStorage(updated)
     if (get().session?.id === id) {
@@ -1031,7 +1052,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     })
     persistSavedSessionsToStorage(updated)
     set({ savedSessions: updated })
-  }
+  },
+
+  saveChartState: (id, state) => {
+    savedChartStates.set(id, state)
+  },
+  chartStateFor: (id) => savedChartStates.get(id),
+  saveChartSelection: (id, drawingId) => {
+    savedChartSelections.set(id, drawingId)
+  },
+  chartSelectionFor: (id) => savedChartSelections.get(id)
 }))
 
 // Stream main-process download progress into the store while a download runs.

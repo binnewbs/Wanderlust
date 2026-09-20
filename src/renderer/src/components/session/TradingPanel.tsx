@@ -142,7 +142,7 @@ export default function TradingPanel(): React.JSX.Element {
             data-testid="selected-position"
             variant="outline"
             className={cn(
-              'h-8 animate-in fade-in zoom-in-95 items-center gap-1.5 rounded-md px-2.5 font-mono text-xs font-normal transition-colors duration-150',
+              'h-7 animate-in fade-in zoom-in-95 items-center gap-1.5 rounded-md px-2.5 font-mono text-xs font-normal transition-colors duration-150',
               selectedDrawing.direction === 'long'
                 ? 'border-chart-2/40 bg-chart-2/10 text-chart-2'
                 : 'border-destructive/40 bg-destructive/10 text-destructive'
