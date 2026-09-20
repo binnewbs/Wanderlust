@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "description": "Local, fully offline desktop backtesting application for trading (FX Replay-style).",
   "main": "./out/main/index.js",
-  "author": "Wanderlust",
-  "homepage": "https://github.com",
+  "author": "binnewbs",
+  "homepage": "https://github.com/binnewbs/Wanderlust",
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",
