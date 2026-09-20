@@ -1,151 +1,105 @@
 # Wanderlust
 
-Wanderlust is an open-source, desktop-based backtesting application for trading. It allows traders to test their trading strategies on historical market data and analyze their performance. It is modeled after FX Replay but runs fully offline: market data is downloaded on-demand from Dukascopy and cached locally, so there are no server costs and no subscription paywalls.
+Wanderlust is an open-source, desktop trading backtester built around the **FX Replay** idea: download a market range once, replay it candle-by-candle, and trade it against a simulated account — with full analytics and a trade journal when you are done.
 
-> **Status: Phase 5 complete** — trade execution & position management. Place Vela's Long/Short Position tool, click it to select, hit **New Order**: risk templates (0.25–3% + custom) size the position at fill, SL/TP lock to the tool, and Market/Limit/Stop orders fill and close tick-by-tick during playback against a live simulated balance. See [Work in progress](#work-in-progress).
+It runs **fully offline** after the first download. Market data is fetched on demand from Dukascopy's public datafeed and cached locally, so there are no server costs and no subscription paywalls. Everything — data, playback, matching engine, and analysis — happens on your machine.
 
-## Tech Stack
+## Features
 
-- **App shell:** Electron (Node.js backend for file/DB access and network requests)
+- **On-demand market data.** Pick an asset (currencies, metals, indices, crypto), a date range, and a starting balance. One request per trading day downloads Dukascopy's pre-computed **M1** candles; the coarser timeframes (M5 → D1) are aggregated from that same day locally. Every timeframe for the range is downloaded in one batch and cached for reuse.
+- **Candle-by-candle replay.** Play and pause, step forward/back, skip to start/end, jump to a date, and set the playback speed (1–120×). The chart only ever reveals candles that have "happened so far" — exactly like watching live markets.
+- **Run-up context.** A session never starts blank: up to 24 hours of market time before the range is pre-loaded (spanning weekends and holidays), so the chart opens with a full day of price action and a sensible initial view.
+- **Simulated account + risk-based sizing.** Set a risk percentage (0.25–3% templates, or custom) and your position is sized at fill from the balance (`risk / |entry − SL|`), with a live size preview before you submit.
+- **Market, Limit, and Stop orders** with stop-loss and take-profit. Orders evaluate and fill tick-by-tick during playback — stop-loss checked before take-profit on every candle (conservative).
+- **Trading from the chart.** Draw a **Long/Short Position** tool on the chart, click it to select, then **New Order** seeds direction, entry, SL, and TP straight from the drawing — or go fully manual.
+- **Guarded rewinding.** Going backward handles positions responsibly: with a position open you get a **Close Now / Nevermind** dialog; rewinding past closed trades warns that their PnL will disappear.
+- **Analytics & journal.** KPI cards, equity curve, calendar PnL, and a per-trade journal with deep insights on your closed trades.
+- **Live balance.** The trading strip tracks your balance, pending/active/closed order counts, and recent closed trades with realized PnL.
+
+## Keyboard shortcuts
+
+| Shortcut          | Action       |
+| ----------------- | ------------ |
+| `Space`           | Play / Pause |
+| `Ctrl` + `O`      | New Order    |
+| `Ctrl` + `Space`  | Step forward |
+| `Shift` + `Space` | Step back    |
+
+Shortcuts are ignored while typing in a field or inside an open dialog. A button in the playback bar (keyboard icon) shows the current list anytime.
+
+## How it works
+
+### Data
+
+`src/main/dukascopy.ts` fetches Dukascopy's pre-computed native candle files — one small request per symbol per day instead of per-candle tick streaming, which keeps the app under Dukascopy's rate limiter (10 retries with exponential backoff and jitter, adaptive pacing between days). Files are LZMA-compressed `bi5` format and decoded in the main process (`src/main/bi5.ts`; weekends are skipped since most markets publish no Saturday data).
+
+Every fetched day is written to a local **SQLite cache** (`app.getPath('userData')/wanderlust-cache.db`), and every download is cache-first: days already stored are served from disk with zero network traffic. Re-running a session on a cached range is instant.
+
+### Playback
+
+Playback is a single index into each timeframe's candle array. The chart is driven by an in-place market update on every reveal, so switching timeframes mid-session only shows what has already happened, and going back simply rewinds the index. The playback loop advances one candle per tick with a speed-controlled delay.
+
+### Trading
+
+Orders live in the session store as one `orders` array (`pending → filled → closed`). A **Market** order fills at the next candle's open; **Limit/Stop** orders fill when price trades through the entry level (buy-limit below / sell-stop above, mirrored for shorts). Each filled candle is evaluated for stop-loss first, then take-profit. Rewinding uses state restore, so positions taken later in the timeline are removed — no ghost pending orders survive a rewind.
+
+### Sessions
+
+The main menu lists your saved backtest sessions — resume trading, jump to analytics, or delete. Each session stores its own name, asset, range, timeframe data, balance, and full trade history in the local database.
+
+## Tech stack
+
+- **App shell:** Electron (Node.js backend for files, SQLite, and network)
 - **Frontend:** React + Vite + TypeScript (`electron-vite`)
-- **State management:** Zustand
+- **State:** Zustand
 - **Charting:** `@luxalgo/vela` + `@luxalgo/vela/workspace`
-- **Local cache:** SQLite (`better-sqlite3`, via Electron IPC)
-- **Data fetching:** `dukascopy-node` (main process only)
-- **UI kit:** Tailwind CSS v4 + shadcn/ui
+- **Storage:** SQLite (`better-sqlite3`)
+- **Data:** custom HTTP fetcher against Dukascopy's datafeed + `lzma-native` bi5 decoding
+- **UI:** Tailwind CSS v4 + shadcn/ui + `lucide-react`
+- **Analytics charts:** Recharts
 
-## Getting Started
+## Getting started
 
 ```bash
 npm install
 npm run dev
 ```
 
-Other scripts:
+| Script                                            | Purpose                                                                |
+| ------------------------------------------------- | ---------------------------------------------------------------------- |
+| `npm run dev`                                     | Start the app in development (HMR enabled)                             |
+| `npm run build`                                   | Typecheck + build main / preload / renderer into `out/`                |
+| `npm run typecheck`                               | Typecheck main (`tsconfig.node.json`) + renderer (`tsconfig.web.json`) |
+| `npm run lint` / `npm run format`                 | ESLint / Prettier                                                      |
+| `npm run build:linux` / `build:win` / `build:mac` | Package with electron-builder                                          |
 
-| Script                                            | Purpose                                                                                    |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `npm run dev`                                     | Start the Electron app in development (HMR enabled)                                        |
-| `npm run build`                                   | Typecheck + build main / preload / renderer into `out/`                                    |
-| `npm run typecheck`                               | Typecheck main (`tsconfig.node.json`) + renderer (`tsconfig.web.json`)                     |
-| `npm run lint` / `npm run format`                 | ESLint / Prettier                                                                          |
-| `npm run rebuild`                                 | Rebuild `better-sqlite3` against Electron's ABI (only needed after Node/Electron upgrades) |
-| `npm run build:linux` / `build:win` / `build:mac` | Package with electron-builder                                                              |
+## Using Wanderlust
 
-## Project Layout
+1. **New Session** — name the session, pick an asset and a sensible date range (e.g. a single month), set a starting balance, and start. A progress panel streams the per-day download.
+2. The **chart** opens with the run-up context pre-loaded. Switch timeframes in the chart topbar free anytime — every timeframe is already available.
+3. **Playback** — hit Play, or step candle-by-candle. Watch slow, ramp the speed up, skip to jump.
+4. **Trade** — draw a Long/Short Position tool on the chart, click the drawing to select it, then **New Order** (or just hit `Ctrl` + `O` for manual). Pick a risk %, review the size preview, and submit.
+5. **Rewind** — step back, skip to start, or Go To an earlier date; Wanderlust guards open positions and warns before erasing trade history.
+6. **Analytics** — from the main menu, open a session's analytics: KPIs, equity curve, PnL calendar, and the trade journal.
+
+## Data & storage notes
+
+- **Rate limits.** Dukascopy can return HTTP 429 for bursts; the fetcher retries (up to 10 attempts, capped 30 s of backoff) and paces itself. Very large ranges may take a while the first time — afterward they are served from cache.
+- **Quiet days.** Weekends and holidays return no data for most assets (crypto trades 7 days). Gap days are skipped rather than erroring.
+- **Forward-filled candles.** Dukascopy's feed carries synthetic same-OHLCV candles in gaps; the decoder filters these so they never distort your backtest.
+
+## Development
 
 ```
 src/
-├── shared/
-│   ├── ipc.ts            # IPC channel names + payload types (the contract)
-│   ├── timeframes.ts     # Canonical timeframe list (m1…d1) + labels
-│   └── assets.ts         # Curated Dukascopy instrument list (generated from its metadata)
-├── main/
-│   ├── index.ts          # App entry: window creation, lifecycle, E2E hook
-│   ├── ipc.ts            # ipcMain.handle() registration (download single/batch, cache query, summary)
-│   ├── db.ts             # SQLite cache (schema, query, upsert, summary)
-│   ├── dukascopy.ts      # Dukascopy fetcher: per-day loop, cache skip, progress
-│   └── smoke.ts          # Dev-only SQLite smoke test
-├── preload/
-│   ├── index.ts          # contextBridge exposing window.api.*
-│   └── index.d.ts        # Typed contract for window.api
-└── renderer/
-    └── src/
-        ├── App.tsx       # Session screen: header, empty state, chart + playback layout
-        ├── store/
-        │   └── session.ts# Zustand: session lifecycle (idle→downloading→ready/error),
-        │                 # progress, candlesByTimeframe, playback fields
-        ├── components/
-        │   ├── ui/           # shadcn/ui components
-        │   ├── chart/
-        │   │   ├── VelaChart.tsx  # Vela workspace wrapper (per-session mount, provider-driven)
-        │   │   ├── sessionProvider.ts # 'wanderlust' Vela DataProvider serving session bars
-        │   │   └── vela.ts        # timeframe + candle adapters (kept out of the component)
-        │   └── session/
-        │       ├── NewSessionModal.tsx  # asset/timeframe/range/balance + progress panel
-        │       └── PlaybackPanel.tsx    # play/pause/step/skip/speed slider + go-to-date
-        └── assets/main.css  # Tailwind v4 + shadcn theme tokens
+├── shared/     # IPC contract, timeframes, instrument list (shared main ⇄ renderer)
+├── main/       # Electron main: IPC, SQLite cache, Dukascopy fetcher, bi5 decoding
+├── preload/    # contextBridge — exposes the typed window.api to the renderer
+└── renderer/   # React app: sessions, chart, playback, trading, analytics
 ```
 
-## IPC Contract (Phase 2)
+Notes for contributors:
 
-Exposed to the renderer as `window.api` via the preload bridge:
-
-| Channel                  | Direction       | Purpose                                                                      |
-| ------------------------ | --------------- | ---------------------------------------------------------------------------- |
-| `data:download`          | renderer → main | Cache-first download of a range (`window.api.downloadData`)                  |
-| `data:get-cached`        | renderer → main | Query candles already cached (`window.api.getCachedData`)                    |
-| `data:cache-summary`     | renderer → main | List cached (symbol, timeframe) ranges (`window.api.getCacheSummary`)        |
-| `data:download-progress` | main → renderer | Progress events streamed while downloading (`window.api.onDownloadProgress`) |
-
-`window.api.downloadData(request)` returns either:
-
-- a `DownloadResult` (`{ ok, candles, source, ... }`, `source` is `'cache'` for a fully cached range, `'dukascopy'` when all fetched this call, or `'mixed'` when cached days were reused) when `request` names a single `timeframe`; or
-- a `DownloadBatchResult` (`{ ok, timeframes: [{ timeframe, candles, source }], totalCandles }`) when `request.timeframes` lists several (the session always download all of m1…d1 in one batch; progress is scaled across the batch).
-
-The SQLite cache lives at `app.getPath('userData')/wanderlust-cache.db` with a
-`cached_candles` table keyed on `(symbol, timeframe, timestamp)`.
-
-## Dev Verification
-
-These env-guarded hooks exercise the real stack on the built app:
-
-```bash
-# SQLite layer only (insert → query → summarize → cleanup) against real Electron runtime
-WANDERLUST_SMOKE=1 ./node_modules/electron/dist/electron .
-
-# Full round trip through the real renderer — needs a build (`npm run build`) and
-# network access to Dukascopy for the first download:
-#   1. UI shell      → header, phase badge, empty state, New Session button
-#   2. downloadData  → 'dukascopy' (fresh) or 'mixed'/'cache' (partially cached)
-#   3. getCachedData / getCacheSummary → persistence readback
-#   4. downloadData  → 'cache' (instant cache hit)
-#   5. batch download → downloadData with timeframes: ['m15','h1','d1'] returns
-#      a DownloadBatchResult (session behavior: many timeframes in one call)
-#   6. UI journey    → open the New Session modal, set a cached range, click
-#      Start Session, wait for the Vela workspace to mount and PAINT (canvas
-#      pixel sampling), switch the chart to 15m via the topbar, assert it
-#      repaints with the new dataset + playback panel + session chip
-#   7. ui2 grace     → a second session (cached range) parked at index 0,
-#      showing the run-up tail before any session candle is revealed
-#   8. ui3 orders    → Phase 5: inject + select Long/Short Position drawings,
-#      place Market/Limit/Stop orders through New Order (SL/TP locked to the
-#      tool, risk templates), step candle-by-candle and assert the fills/exits
-#      (TP-win, SL-loss) moved the balance exactly as re-computed from the
-#      cached candles
-#   9. ui4 selection  → regression: a click on a drawing also opens Vela's
-#      floating toolbar; dismissing it (an outside press) must not drop the
-#      drawing — New Order still seeds from the tool and the order closes exact
-#  10. ui5 viewport    → regression: stepping playback must not reset the chart
-#      view — the current zoom is preserved and the right edge advances with the
-#      newest candle (no snap to a fixed 120-bar frame)
-#  11. ui6 play-view   → regression: wheel-zoom + max-speed playback must keep
-#      the zoomed width (fast pushes overlap setMarket's clearing window, where
-#      the viewport is unreadable — the fix slides the last applied range
-#      instead of framing a fixed 120-bar window on the newest candle)
-#  12. ui7 freeview     → regression: the chart must not be stuck flush to the
-#      right edge and the manual price frame ("free view" from dragging the
-#      vertical price scale) must survive playback — the fix reads the UNCLAMPED
-#      viewport (right offset included) per push and re-freezes manual price
-#      scales after each reload
-# Writes screenshots to /tmp/opencode/wanderlust-{1-empty,2-session,3-runup-grace,4-trading,5-selection,6-viewport,7-playback-view,8-freeview}.png
-WANDERLUST_E2E=1 ./node_modules/electron/dist/electron .
-```
-
-## Notes & Gotchas
-
-- **`dukascopy-node` runs only in the Electron main process.** The renderer cannot call Dukascopy directly (CORS + Node-only filesystem/network deps); everything goes through the IPC handlers above.
-- **Downloads are fetched day-by-day** (`fetchFromDukascopy` in `src/main/dukascopy.ts`). Each day is served from SQLite when already cached, otherwise fetched from Dukascopy (UTC day boundaries, `to` is exclusive in dukascopy-node), with a short pause between network calls. This yields per-day progress events and lets partially-cached ranges fill only their gaps.
-- **Rate limits.** Dukascopy may return HTTP 429 for bursts. The fetcher retries (3×, 750 ms apart) and pauses between days; very large ranges may still take a while. Empty trading days (weekends/holidays) return zero candles rather than errors (`retryOnEmpty: false`).
-- **Native module rebuilds.** `better-sqlite3` is compiled against Electron's ABI. `npm install` already runs `electron-builder install-app-deps` as a postinstall; run `npm run rebuild` manually after upgrading Electron or Node.
-- **npm 12 script blocking.** npm 12+ may block `electron`'s postinstall (it downloads the Electron binary). If `npm run dev` fails with "Electron failed to install correctly" or a `dist/electron` spawn error, run `npm install-scripts approve electron` (plus `npx electron --version` to confirm) and reinstall.
-- **shadcn/ui layout.** The shadcn CLI can't auto-detect electron-vite's folder layout, so `components.json` is maintained manually (source of truth for the `@/*` → `src/renderer/src/*` alias). Adding new components with `npx shadcn add <name>` works, but the CLI writes files under a literal `@/` folder — move them to `src/renderer/src/components/` afterwards.
-
-## Work in Progress
-
-- **Phase 1 (done):** electron-vite scaffold, dependencies (Zustand, Vela, lucide-react, shadcn/ui, better-sqlite3, dukascopy-node), IPC handlers + preload bridge, SQLite cache schema.
-- **Phase 2 (done):** on-demand Dukascopy fetching (`getHistoricalRates` in `src/main/dukascopy.ts`) — day-by-day loop with per-day cache skip, progress events, gap-fill merging (`source: cache | dukascopy | mixed`), and unknown-symbol/timeframe validation.
-- **Phase 3 (done):** session UI — New Session modal (asset selector backed by `src/shared/assets.ts`, initial chart timeframe, date range, starting balance), live download progress panel, and the `@luxalgo/vela/workspace` chart mounted per session. A session downloads **every timeframe (m1…d1) in one batch** (`data:download` with `timeframes`, progress scaled across the batch) into the SQLite cache, and the chart is driven by a `wanderlust` data provider (`createSessionDataProvider`) that serves each timeframe's candles from the session store — so the workspace's timeframe bar switches datasets live instead of going blank.
-- **Phase 4 (done):** the playback loop. `currentIndex` (default 0) lives in the session store; the chart only ever shows the revealed slice — `masterCandleArray.slice(0, currentIndex)` on the session's timeframe, or the candles opened up to the playback point on any other timeframe (switching timeframe mid-session shows only what "has happened" so far). Sessions do **not** start blank: the run-up pre-loads a **full 24 hours of candles** before the range — whole trading days walked backward one at a time from the start date until ≥ 24h of market time is covered (spans weekends, holidays, and short session-length assets like indices). Each day is fetched cache-first and only touches the network when it's missing, with an adaptive budget: a session that just downloaded from Dukascopy gets a generous window (90 s — enough for a real day × all timeframes), a fully cache-served session gets a short one (15 s, fail fast when offline/rate-limited). The run-up can never abort the session — whatever lands is kept — and the initial view frames the whole run-up, so a session starting on 2026-01-05 opens showing 01/04's (and earlier, if a weekend/holiday intervenes) candles. Playback then slides a fixed 120-bar window with the newest revealed bar. `PlaybackPanel` runs the loop (`setInterval`, delay from the speed slider 1–120 → 5 s–50 ms per candle), with step forward/back, skip to start/end, and Go To (jump to a date → binary-search `currentIndex`). `VelaChart` pushes each reveal through `chart.setMarket({ timeframe, data, visibleRange })` — an in-place market switch, idempotent per `(timeframe, index)` so the `market:changed` echo from each push converges instead of re-pushing into an infinite loop. The provider's `getBars` is slice-aware too, so a topbar timeframe switch during playback never flashes the full dataset.
-- **Phase 5 (done):** trade execution & position management. Selecting a Vela **Long/Short Position** drawing (via `drawing:selected`) surfaces it in the new `TradingPanel`, and **New Order** seeds the order menu from it — direction from the tool's geometry (target ≥ entry → long), SL/TP locked read-only, entry prefilled (editable for Limit/Stop). Risk is expressed as a % of the account: templates 0.25/0.5/1/2/3% + custom, positions sized at fill from the balance then on (risk / |entry − SL|), with the menu showing a live size preview. Order types: **Market** fills at the next candle's open, **buy-limit** on `low ≤ price`, **sell-limit** on `high ≥ price`, **buy-stop** on `high ≥ price`, **sell-stop** on `low ≤ price`. Filled trades evaluate **stop-loss before take-profit** on the same candle (conservative): long `low ≤ SL` stops, else `high ≥ TP` profits; short mirrored. Orders live in one `orders` array (pending → filled → closed) in the session store and are evaluated by the pure `evaluateOrders` during advance/step/skip/Go-To, and an order submitted at index `s` first reacts to candle `s` (the "next candle's open"; a submitted order can never fill a candle already revealed). Going **forward** settles PnL; going **backward** (step back, skip to start, a Go-To jump behind the clock) routes through guard dialogs — with a position open a dialog offers **Close Now** (flattens at market price, then the move proceeds) or **Nevermind**; once flat, rewinding to the most recent stop-loss/take-profit exit warns that the positions you took (and their PnL) will be gone, with a "don't show this dialog for the rest of this session" checkbox. The rewind itself uses the pure `restoreOrdersAt`, which returns every order to its state at the destination index: realized PnL from trades taken later in the timeline disappears, and any trade whose entry or exit lies at/after the destination is **removed entirely** — no ghost pending order is left behind (a pending order not yet submitted at the destination is dropped too), so going backward past a position never re-enters it and it never refills on forward replay gone (balance recomputed from the seed `startBalance`). The trading strip shows the live balance, pending/active/closed counts and compact rows (SL exits in red, TP exits in green with realized pnl), and the header balance tracks it. Manual orders (no drawing selected) are fully typed: entry/SL/TP by hand.
-- **Phase 6:** analytics & journaling.
+- **shadcn/ui layout.** The CLI can't auto-detect electron-vite's folder layout; `components.json` is maintained manually (it maps `@/*` → `src/renderer/src/*`). When adding components, move the generated files into `src/renderer/src/components/` afterward.
+- **Native modules.** `better-sqlite3` and `lzma-native` are compiled against Electron's ABI. `npm install` runs `electron-builder install-app-deps` automatically; run `npm run rebuild` manually after upgrading Electron or Node.
+- **npm 12 script blocking.** npm 12+ may block `electron`'s binary download. If `npm run dev` fails with "Electron failed to install correctly", run `npm install-scripts approve electron` and reinstall.
