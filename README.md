@@ -1,5 +1,11 @@
 # Wanderlust
 
+<p align="center">
+  <img src="resources/icon.png" alt="Wanderlust icon" width="128">
+</p>
+
+> ![Wanderlust main screen](resources/ss.png)
+
 Wanderlust is an open-source, desktop trading backtester built around the **FX Replay** idea: download a market range once, replay it candle-by-candle, and trade it against a simulated account — with full analytics and a trade journal when you are done.
 
 It runs **fully offline** after the first download. Market data is fetched on demand from Dukascopy's public datafeed and cached locally, so there are no server costs and no subscription paywalls. Everything — data, playback, matching engine, and analysis — happens on your machine.
