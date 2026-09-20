@@ -4,6 +4,7 @@ out
 .DS_Store
 .eslintcache
 *.log*
+.agents
 
 # plan.md is the internal blueprint; keep it out of version control
 plan.md
