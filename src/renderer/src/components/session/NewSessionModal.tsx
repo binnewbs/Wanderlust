@@ -127,11 +127,11 @@ export default function NewSessionModal({
 
         {status === 'downloading' ? (
           /* -------- Loading state: progress streamed over IPC -------- */
-          <div className="flex flex-col gap-3">
+          <div className="flex animate-in fade-in zoom-in-95 flex-col gap-3 duration-200">
             <p className="text-xs text-muted-foreground">
               Downloading {asset?.label ?? assetId} {timeframe} · {startDate} → {endDate}
             </p>
-            <Progress value={latest?.percent ?? 0} />
+            <Progress value={latest?.percent ?? 0} className="progress-shimmer" />
             <p className="font-mono text-xs text-foreground">
               {latest?.message ?? 'Starting…'}
               {latest?.percent !== undefined && (
@@ -140,14 +140,16 @@ export default function NewSessionModal({
             </p>
             <ul className="flex max-h-28 flex-col gap-0.5 overflow-y-auto font-mono text-[11px] text-muted-foreground">
               {progress.slice(0, -1).map((event, i) => (
-                <li key={i}>{event.message}</li>
+                <li key={i} className="animate-in fade-in slide-in-from-left-1 duration-200">
+                  {event.message}
+                </li>
               ))}
             </ul>
           </div>
         ) : status === 'error' ? (
           /* -------- Download failed -------- */
           <>
-            <Alert variant="destructive">
+            <Alert variant="destructive" className="animate-in fade-in slide-in-from-top-1 duration-200">
               <AlertTriangle className="size-4 shrink-0" />
               <AlertDescription>{error}</AlertDescription>
             </Alert>

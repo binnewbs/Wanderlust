@@ -383,7 +383,11 @@ export default function PlaybackPanel(): React.JSX.Element {
           }}
           title={playing ? 'Pause' : 'Play'}
         >
-          {playing ? <Pause /> : <Play />}
+          {playing ? (
+            <Pause key="pause" className="animate-in zoom-in-90 duration-150" />
+          ) : (
+            <Play key="play" className="animate-in zoom-in-90 duration-150" />
+          )}
           {playing ? 'Pause' : 'Play'}
         </Button>
 

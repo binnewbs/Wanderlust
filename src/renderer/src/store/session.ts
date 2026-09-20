@@ -8,6 +8,7 @@ import {
   timeframeMs,
   type Timeframe
 } from '@shared/timeframes'
+import { isTradingDay } from '@shared/trading'
 import {
   evaluateOrders,
   hasOpenPosition,
@@ -320,9 +321,12 @@ async function loadCandlesAndRunUp(
   const runUpStartedAt = Date.now()
   for (let back = 1; back <= SESSION_RUNUP_LOOKBACK_DAYS; back++) {
     if (runUpMs(initialTimeframe) >= RUNUP_TARGET_MS) break
+    const day = isoAddDays(runUpEnd, -(back - 1))
+    // Skip non-trading days (weekends for non-crypto): nothing to download,
+    // and it avoids firing batch requests that would come back empty.
+    if (!isTradingDay(Date.parse(`${day}T00:00:00Z`), asset.id)) continue
     const remaining = runUpBudgetMs - (Date.now() - runUpStartedAt)
     if (remaining <= 0) break
-    const day = isoAddDays(runUpEnd, -(back - 1))
     const dayFetch = window.api.downloadData({
       symbol: asset.id,
       timeframe: initialTimeframe,
@@ -870,18 +874,42 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const hasCachedCandles = Object.values(candlesByTimeframe).some((c) => c && c.length > 0)
 
       if (hasCachedCandles) {
+        // Cache-only run-up: walk back whole trading days (cache reads cost
+        // nothing) until 24h of market time is covered. A Monday-start session
+        // thus reaches Friday + Sunday, not just Sunday's stub. Mirrors the
+        // fresh-download walk (loadCandlesAndRunUp) without any network.
         const runUpEnd = isoAddDays(target.startDate, -1)
-        for (const tf of TIMEFRAMES) {
-          const runUpData = await window.api.getCachedData({
-            symbol: target.asset.id,
-            timeframe: tf,
-            startDate: runUpEnd,
-            endDate: runUpEnd
-          })
-          if (runUpData.ok && runUpData.candles.length > 0) {
-            runUpByTimeframe[tf] = runUpTail(runUpData.candles, timeframeMs(tf))
+        const windowCandles: Partial<Record<Timeframe, Candle[]>> = {}
+        const runUpMs = (tf: Timeframe): number =>
+          (windowCandles[tf]?.length ?? 0) * timeframeMs(tf)
+        for (const tf of TIMEFRAMES) sources[tf] = 'cache'
+
+        let back = 1
+        while (back <= SESSION_RUNUP_LOOKBACK_DAYS && runUpMs(target.timeframe) < RUNUP_TARGET_MS) {
+          const day = isoAddDays(runUpEnd, -(back - 1))
+          if (!isTradingDay(Date.parse(`${day}T00:00:00Z`), target.asset.id)) {
+            back++
+            continue
           }
-          sources[tf] = 'cache'
+          for (const tf of Object.keys(candlesByTimeframe) as Timeframe[]) {
+            const data = await window.api.getCachedData({
+              symbol: target.asset.id,
+              timeframe: tf,
+              startDate: day,
+              endDate: day
+            })
+            if (!data.ok || data.candles.length === 0) continue
+            const prev = windowCandles[tf]
+            windowCandles[tf] = prev ? data.candles.concat(prev) : data.candles
+          }
+          back++
+        }
+
+        for (const tf of Object.keys(candlesByTimeframe) as Timeframe[]) {
+          const win = windowCandles[tf]
+          if (!win || win.length === 0) continue
+          const runUp = runUpTail(win, timeframeMs(tf))
+          if (runUp.length > 0) runUpByTimeframe[tf] = runUp
         }
       } else {
         const loaded = await loadCandlesAndRunUp(

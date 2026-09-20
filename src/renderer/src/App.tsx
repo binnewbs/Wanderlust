@@ -155,7 +155,10 @@ export default function App(): React.JSX.Element {
 
       {/* Download error surfaced outside the modal (e.g. a background failure). */}
       {error && status === 'error' && !modalOpen && (
-        <Alert variant="destructive" className="rounded-none border-x-0 border-t-0">
+        <Alert
+          variant="destructive"
+          className="animate-in fade-in slide-in-from-top-2 duration-200 rounded-none border-x-0 border-t-0"
+        >
           <AlertDescription>{error}</AlertDescription>
           <AlertAction>
             <Button
@@ -177,7 +180,9 @@ export default function App(): React.JSX.Element {
             {/* Chart view container: kept mounted so workspace, drawings, indicators and user settings survive */}
             <div
               className={`absolute inset-0 flex flex-col ${
-                activeView === 'chart' ? 'visible z-10' : 'invisible pointer-events-none -z-10'
+                activeView === 'chart'
+                  ? 'visible z-10 animate-in fade-in slide-in-from-right-2 duration-200'
+                  : 'invisible pointer-events-none -z-10'
               }`}
             >
               <div className="relative flex-1">
@@ -195,7 +200,9 @@ export default function App(): React.JSX.Element {
             {/* Analytics view container */}
             <div
               className={`absolute inset-0 flex flex-col bg-background ${
-                activeView === 'analytics' ? 'visible z-10' : 'invisible pointer-events-none -z-10'
+                activeView === 'analytics'
+                  ? 'visible z-10 animate-in fade-in slide-in-from-left-2 duration-200'
+                  : 'invisible pointer-events-none -z-10'
               }`}
             >
               <AnalyticsView onBackToChart={() => setActiveView('chart')} />

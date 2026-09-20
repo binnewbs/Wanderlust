@@ -99,23 +99,35 @@ export default function AnalyticsView({
         </TabsList>
 
         {/* TAB 1: Overview */}
-        <TabsContent value="overview" className="flex flex-col gap-4 focus-visible:outline-hidden">
+        <TabsContent
+          value="overview"
+          className="flex flex-col gap-4 focus-visible:outline-hidden data-[state=active]:animate-in data-[state=active]:fade-in data-[state=active]:slide-in-from-bottom-1 data-[state=active]:duration-200"
+        >
           <KpiGrid kpis={kpis} balance={balance} startBalance={startBalance} />
           <EquityChart data={equityCurve} startBalance={startBalance} />
         </TabsContent>
 
         {/* TAB 2: Deep Insights */}
-        <TabsContent value="insights" className="focus-visible:outline-hidden">
+        <TabsContent
+          value="insights"
+          className="focus-visible:outline-hidden data-[state=active]:animate-in data-[state=active]:fade-in data-[state=active]:slide-in-from-bottom-1 data-[state=active]:duration-200"
+        >
           <DeepInsights kpis={kpis} dayStats={dayStats} />
         </TabsContent>
 
         {/* TAB 3: Calendar PnL */}
-        <TabsContent value="calendar" className="focus-visible:outline-hidden">
+        <TabsContent
+          value="calendar"
+          className="focus-visible:outline-hidden data-[state=active]:animate-in data-[state=active]:fade-in data-[state=active]:slide-in-from-bottom-1 data-[state=active]:duration-200"
+        >
           <CalendarPnl orders={orders} defaultDate={session?.startDate} />
         </TabsContent>
 
         {/* TAB 4: Trade Journal */}
-        <TabsContent value="journal" className="focus-visible:outline-hidden">
+        <TabsContent
+          value="journal"
+          className="focus-visible:outline-hidden data-[state=active]:animate-in data-[state=active]:fade-in data-[state=active]:slide-in-from-bottom-1 data-[state=active]:duration-200"
+        >
           <TradeJournal orders={orders} />
         </TabsContent>
       </Tabs>

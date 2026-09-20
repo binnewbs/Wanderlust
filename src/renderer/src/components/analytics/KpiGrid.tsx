@@ -15,7 +15,7 @@ export default function KpiGrid({ kpis, balance, startBalance }: KpiGridProps): 
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
       {/* 1. Expectancy */}
-      <Card size="sm" className="bg-card/70 backdrop-blur-xs">
+      <Card size="sm" className="bg-card/70 backdrop-blur-xs animate-in fade-in slide-in-from-bottom-2 duration-200 fill-mode-backwards" style={{ '--tw-animation-delay': '0ms' } as React.CSSProperties}>
         <CardHeader className="flex flex-row items-center justify-between pb-1">
           <CardTitle className="text-[11px] font-semibold tracking-wider uppercase text-muted-foreground">
             Expectancy
@@ -39,7 +39,7 @@ export default function KpiGrid({ kpis, balance, startBalance }: KpiGridProps): 
       </Card>
 
       {/* 2. Profit Factor */}
-      <Card size="sm" className="bg-card/70 backdrop-blur-xs">
+      <Card size="sm" className="bg-card/70 backdrop-blur-xs animate-in fade-in slide-in-from-bottom-2 duration-200 fill-mode-backwards" style={{ '--tw-animation-delay': '45ms' } as React.CSSProperties}>
         <CardHeader className="flex flex-row items-center justify-between pb-1">
           <CardTitle className="text-[11px] font-semibold tracking-wider uppercase text-muted-foreground">
             Profit Factor
@@ -63,7 +63,7 @@ export default function KpiGrid({ kpis, balance, startBalance }: KpiGridProps): 
       </Card>
 
       {/* 3. Average RR */}
-      <Card size="sm" className="bg-card/70 backdrop-blur-xs">
+      <Card size="sm" className="bg-card/70 backdrop-blur-xs animate-in fade-in slide-in-from-bottom-2 duration-200 fill-mode-backwards" style={{ '--tw-animation-delay': '90ms' } as React.CSSProperties}>
         <CardHeader className="flex flex-row items-center justify-between pb-1">
           <CardTitle className="text-[11px] font-semibold tracking-wider uppercase text-muted-foreground">
             Avg RR
@@ -79,7 +79,7 @@ export default function KpiGrid({ kpis, balance, startBalance }: KpiGridProps): 
       </Card>
 
       {/* 4. Win Rate */}
-      <Card size="sm" className="bg-card/70 backdrop-blur-xs">
+      <Card size="sm" className="bg-card/70 backdrop-blur-xs animate-in fade-in slide-in-from-bottom-2 duration-200 fill-mode-backwards" style={{ '--tw-animation-delay': '135ms' } as React.CSSProperties}>
         <CardHeader className="flex flex-row items-center justify-between pb-1">
           <CardTitle className="text-[11px] font-semibold tracking-wider uppercase text-muted-foreground">
             Win Rate
@@ -101,7 +101,7 @@ export default function KpiGrid({ kpis, balance, startBalance }: KpiGridProps): 
       </Card>
 
       {/* 5. Max Drawdown */}
-      <Card size="sm" className="bg-card/70 backdrop-blur-xs">
+      <Card size="sm" className="bg-card/70 backdrop-blur-xs animate-in fade-in slide-in-from-bottom-2 duration-200 fill-mode-backwards" style={{ '--tw-animation-delay': '180ms' } as React.CSSProperties}>
         <CardHeader className="flex flex-row items-center justify-between pb-1">
           <CardTitle className="text-[11px] font-semibold tracking-wider uppercase text-muted-foreground">
             Max Drawdown
@@ -119,7 +119,7 @@ export default function KpiGrid({ kpis, balance, startBalance }: KpiGridProps): 
       </Card>
 
       {/* 6. Net Profit & Balance */}
-      <Card size="sm" className="bg-card/70 backdrop-blur-xs">
+      <Card size="sm" className="bg-card/70 backdrop-blur-xs animate-in fade-in slide-in-from-bottom-2 duration-200 fill-mode-backwards" style={{ '--tw-animation-delay': '225ms' } as React.CSSProperties}>
         <CardHeader className="flex flex-row items-center justify-between pb-1">
           <CardTitle className="text-[11px] font-semibold tracking-wider uppercase text-muted-foreground">
             Net PnL

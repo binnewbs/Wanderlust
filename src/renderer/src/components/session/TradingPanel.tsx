@@ -55,7 +55,7 @@ function OrderChip({ order }: { order: Order }): React.JSX.Element {
     <Badge
       data-testid="order-chip"
       variant={pending ? 'secondary' : 'outline'}
-      className="h-7 items-center gap-1.5 rounded-md px-2 font-mono text-[11px] font-normal"
+      className="h-7 animate-in zoom-in-95 fade-in items-center gap-1.5 rounded-md px-2 font-mono text-[11px] font-normal duration-150"
     >
       <span className="font-sans text-[9px] font-semibold uppercase tracking-wider opacity-70">
         {pending ? 'Pending' : 'Active'} · {ORDER_TYPE_LABEL[order.orderType]}
@@ -76,7 +76,7 @@ function ClosedRow({ order }: { order: Order }): React.JSX.Element {
   return (
     <span
       data-testid="closed-row"
-      className="inline-flex items-center gap-1.5 rounded-md border border-border/50 bg-background/50 px-2 py-0.5 font-mono text-[11px] text-muted-foreground"
+      className="inline-flex animate-in fade-in slide-in-from-right-1 items-center gap-1.5 rounded-md border border-border/50 bg-background/50 px-2 py-0.5 font-mono text-[11px] text-muted-foreground duration-200"
     >
       <span className="font-medium text-foreground">
         {ORDER_TYPE_LABEL[order.orderType]} {directionGlyph(order)}
@@ -115,7 +115,8 @@ export default function TradingPanel(): React.JSX.Element {
           </span>
           <span
             data-testid="trading-balance"
-            className="font-mono text-sm font-semibold tracking-tight text-foreground"
+            key={balance}
+            className="inline-block animate-in fade-in zoom-in-95 font-mono text-sm font-semibold tracking-tight text-foreground duration-200"
           >
             $
             {balance.toLocaleString('en-US', {
@@ -141,7 +142,7 @@ export default function TradingPanel(): React.JSX.Element {
             data-testid="selected-position"
             variant="outline"
             className={cn(
-              'h-8 items-center gap-1.5 rounded-md px-2.5 font-mono text-xs font-normal transition-colors',
+              'h-8 animate-in fade-in zoom-in-95 items-center gap-1.5 rounded-md px-2.5 font-mono text-xs font-normal transition-colors duration-150',
               selectedDrawing.direction === 'long'
                 ? 'border-chart-2/40 bg-chart-2/10 text-chart-2'
                 : 'border-destructive/40 bg-destructive/10 text-destructive'

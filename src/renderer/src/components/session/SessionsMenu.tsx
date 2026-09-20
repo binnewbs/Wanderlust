@@ -46,7 +46,7 @@ export default function SessionsMenu({
 
   if (savedSessions.length === 0) {
     return (
-      <Empty className="h-full">
+      <Empty className="h-full animate-in fade-in zoom-in-95 duration-300">
         <EmptyHeader>
           <EmptyMedia variant="icon">
             <PlayCircle />
@@ -88,7 +88,7 @@ export default function SessionsMenu({
 
       {/* Sessions Grid */}
       <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,300px),340px))] gap-5">
-        {savedSessions.map((s: SavedSession) => {
+        {savedSessions.map((s: SavedSession, index) => {
           const closedOrders = s.orders.filter((o) => o.status === 'closed')
           const netPnl = s.balance - s.startBalance
           const isProfitable = netPnl >= 0
@@ -99,7 +99,8 @@ export default function SessionsMenu({
           return (
             <Card
               key={s.id}
-              className="flex aspect-square w-full flex-col justify-between border-border/80 bg-card/80 transition-all hover:border-primary/40 hover:shadow-md"
+              className="flex aspect-square w-full flex-col justify-between border-border/80 bg-card/80 transition-all animate-in fade-in slide-in-from-bottom-3 zoom-in-95 duration-200 fill-mode-backwards hover:border-primary/40 hover:-translate-y-0.5 hover:shadow-lg"
+              style={{ animationDelay: `${Math.min(index * 45, 450)}ms` }}
             >
               <CardHeader className="p-4 pb-2">
                 <div className="flex items-start justify-between gap-2">
@@ -215,7 +216,7 @@ export default function SessionsMenu({
               orders and session history will be permanently removed.
             </DialogDescription>
           </DialogHeader>
-          <DialogFooter className="gap-2 sm:gap-0">
+          <DialogFooter>
             <Button variant="outline" onClick={() => setSessionToDelete(null)}>
               Cancel
             </Button>

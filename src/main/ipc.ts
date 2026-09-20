@@ -242,6 +242,9 @@ export function registerIpcHandlers(): void {
           if (wholeTfPercent === undefined) return Math.round(base)
           return Math.round(base + (wholeTfPercent / 100) * tfSpan * 100)
         }
+        // Small gap between timeframes so the limiter doesn't see a burst when
+        // one timeframe's last day flows straight into the next one's first.
+        if (i > 0) await new Promise((r) => setTimeout(r, 250))
         results.push(await downloadTimeframe(event, symbol, tf, startDate, endDate, label, scaled))
       }
 

@@ -14,11 +14,18 @@
  *     candles, so one file download serves every timeframe.
  *   - Per-day cache skip: days already stored in SQLite are served from the
  *     local cache (no network).
- *   - Exponential backoff + jitter on retries (10 attempts, cap 30s) and a
- *     small pause between days keep the limiter happy.
+ *   - Exponential backoff + jitter on retries (10 attempts, cap 30s) and
+ *     adaptive pacing between days (wider pause after 429/503, tightens when
+ *     clean) keep the limiter happy.
+ *   - Derived-timeframe seeding: every M1 day that gets downloaded also has
+ *     m5/m15/m30/h1/h4/d1 aggregated and written to the cache, so a batch of
+ *     timeframes costs ONE request per day instead of one per timeframe.
+ *   - Weekends: FX/metals/indices have no Saturday data, so those days are
+ *     skipped outright (crypto trades 7 days).
  *
- * This function only *reads* the cache (to skip days) and returns the merged
- * candle list; the caller in `ipc.ts` persists the result with one upsert.
+ * This function reads the cache to skip days, and WRITES derived timeframes
+ * for freshly-fetched days (upsert). The caller in `ipc.ts` still persists
+ * the requested timeframe's merged result with one final upsert.
  *
  * LZMA decoding (`lzma-native`) is an N-API native module that runs in the
  * Electron main process without rebuild.
@@ -26,7 +33,8 @@
 
 import type { Candle, SingleTimeframeRequest } from '../shared/ipc'
 import { TIMEFRAMES, TIMEFRAME_MS } from '../shared/timeframes'
-import { queryCandlesRange } from './db'
+import { isTradingDay } from '../shared/trading'
+import { insertCandles, queryCandlesRange } from './db'
 import {
   aggregateM1,
   decompressBi5,
@@ -65,8 +73,16 @@ const DOWNLOAD_ATTEMPTS = 10
 const RETRY_MAX_DELAY_MS = 30_000
 const REQUEST_TIMEOUT_MS = 30_000
 
-/** Polite pause between network requests (Dukascopy rate-limits aggressively). */
-const PAUSE_BETWEEN_DAYS_MS = 300
+/** Base pause between network requests; widens ×2 per throttle level. */
+const PAUSE_BASE_MS = 200
+const PAUSE_MAX_MS = 3_200
+/** Throttle escalates 0→4 on 429/503 and decays down when requests stay clean. */
+let throttleLevel = 0
+let cleanStreak = 0
+
+function currentPauseMs(): number {
+  return Math.min(PAUSE_BASE_MS * 2 ** throttleLevel, PAUSE_MAX_MS)
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -125,11 +141,18 @@ function candleUrl(symbol: string, dayStartMs: number): string {
 /**
  * Fetch one day's native M1 candle file with exponential backoff + jitter.
  *
- * @returns parsed M1 candles for that day ([] when the file is missing).
+ * @returns parsed M1 candles for that day ([] when the file is missing) and
+ *   whether any attempt hit a throttle response (429/503).
  */
-async function fetchDayM1(symbol: string, dayStartMs: number, onProgress: ProgressReporter, dayLabel: string): Promise<Candle[]> {
+async function fetchDayM1(
+  symbol: string,
+  dayStartMs: number,
+  onProgress: ProgressReporter,
+  dayLabel: string
+): Promise<{ candles: Candle[]; throttled: boolean }> {
   const url = candleUrl(symbol, dayStartMs)
   const point = getPointValue(symbol)
+  let throttled = false
 
   const wait = (attempt: number, base: number): number =>
     Math.min(base * 2 ** attempt + 500 + Math.random() * 1500, RETRY_MAX_DELAY_MS)
@@ -144,19 +167,20 @@ async function fetchDayM1(symbol: string, dayStartMs: number, onProgress: Progre
       if (resp.status === 200) {
         const raw = Buffer.from(await resp.arrayBuffer())
         const decompressed = await decompressBi5(raw)
-        return parseNativeCandles(decompressed, point, dayStartMs)
+        return { candles: parseNativeCandles(decompressed, point, dayStartMs), throttled }
       }
 
       if (resp.status === 404) {
-        return [] // No data for this period (unsupported symbol / closed day).
+        return { candles: [], throttled } // No data for this period (closed day / unsupported symbol).
       }
 
+      throttled = throttled || resp.status === 429 || resp.status === 503
       // 429 (rate limit) / 503 (server busy) / other — back off and retry.
       if (attempt < DOWNLOAD_ATTEMPTS - 1) {
         const retryAfter = Number(resp.headers.get('retry-after'))
         const delay = retryAfter > 0
           ? retryAfter * 1000
-          : wait(attempt, resp.status === 429 || resp.status === 503 ? 1000 : 500)
+          : wait(attempt, throttled ? 1000 : 500)
         onProgress(
           `Dukascopy busy (HTTP ${resp.status}) — retry ${attempt + 1}/${DOWNLOAD_ATTEMPTS} (${dayLabel})…`
         )
@@ -201,10 +225,18 @@ export async function fetchFromDukascopy(
     throw new Error(`Invalid date range: ${request.startDate} → ${request.endDate}`)
   }
 
-  // Enumerate whole UTC days in the inclusive range.
+  // Enumerate whole UTC trading days in the inclusive range (weekends skipped
+  // for non-crypto symbols — they have no data file anyway).
   const days: number[] = []
-  for (let t = firstDay; t <= lastDay; t += DAY_MS) days.push(t)
+  for (let t = firstDay; t <= lastDay; t += DAY_MS) {
+    if (isTradingDay(t, symbol)) days.push(t)
+  }
   const total = days.length
+  if (total === 0) {
+    // Weekend/holiday range for a non-crypto symbol: nothing to fetch, not an
+    // error — batch/run-up lookups treat it as a silent empty range.
+    return { candles: [], fetchedDays: 0, cachedDays: 0 }
+  }
 
   const merged: Candle[] = []
   let fetchedDays = 0
@@ -227,11 +259,38 @@ export async function fetchFromDukascopy(
       continue
     }
 
-    // 2. Fetch the missing day's M1 file, derive the requested timeframe.
+    // 2. Fetch the missing day's M1 file, derive + cache every timeframe.
     let dayCandles: Candle[]
     try {
-      const m1 = await fetchDayM1(symbol, dayStart, onProgress, dayLabel)
-      dayCandles = aggregateM1(m1, TIMEFRAME_MS[timeframe as keyof typeof TIMEFRAME_MS], dayStart, dayEnd)
+      const { candles: m1, throttled } = await fetchDayM1(symbol, dayStart, onProgress, dayLabel)
+
+      // Adaptive pacing: escalate on throttling, decay after clean stretches.
+      if (throttled) {
+        throttleLevel = Math.min(throttleLevel + 1, 4)
+        cleanStreak = 0
+      } else {
+        cleanStreak++
+        if (cleanStreak >= 3 && throttleLevel > 0) {
+          throttleLevel--
+          cleanStreak = 0
+        }
+      }
+
+      // Derive every timeframe from this day's M1 and cache it, so the rest of
+      // a batch (or later re-downloads) is served without extra requests.
+      const derived = new Map<string, Candle[]>()
+      for (const tf of TIMEFRAMES) {
+        const candles = aggregateM1(m1, TIMEFRAME_MS[tf], dayStart, dayEnd)
+        derived.set(tf, candles)
+        if (candles.length > 0) insertCandles(symbol, tf, candles)
+      }
+      dayCandles = derived.get(timeframe) ?? aggregateM1(m1, TIMEFRAME_MS[timeframe as keyof typeof TIMEFRAME_MS], dayStart, dayEnd)
+
+      if (dayCandles.length > 0) {
+        onProgress(
+          `${dayLabel}: ${m1.length} M1 candles — derived + cached all timeframes`
+        )
+      }
     } catch (err) {
       throw new Error(
         `Dukascopy fetch failed for ${symbol} ${timeframe} on ${dayLabel}: ${describeError(err)}`
@@ -242,7 +301,7 @@ export async function fetchFromDukascopy(
     fetchedDays++
 
     // 3. Be kind to Dukascopy's rate limiter between days.
-    if (i < total - 1) await sleep(PAUSE_BETWEEN_DAYS_MS)
+    if (i < total - 1) await sleep(currentPauseMs())
   }
 
   // Defensive dedupe by timestamp (days can't normally collide, but cheap to guard).

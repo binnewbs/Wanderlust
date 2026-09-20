@@ -140,3 +140,47 @@
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* Shine sweep on the New Session modal's progress bar while downloading. The
+   overlay lives in the Radix indicator (semi-transparent gradient that pans
+   across the filled portion); the indicator itself is on `data-slot`. */
+@keyframes progress-shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(320%);
+  }
+}
+
+.progress-shimmer [data-slot='progress-indicator'] {
+  position: relative;
+  overflow: hidden;
+}
+
+.progress-shimmer [data-slot='progress-indicator']::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, var(--primary-foreground) 28%, transparent),
+    transparent
+  );
+  animation: progress-shimmer 1.3s ease-in-out infinite;
+}
+
+/* Motion-reduced users get static UI: flatten every animation/transition.
+   Kept broad so the tw-animate-css enters/exits are covered as well. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
