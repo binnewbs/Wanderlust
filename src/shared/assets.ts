@@ -181,6 +181,11 @@ export const ASSETS: Asset[] = [
     category: 'Indices'
   },
   {
+    id: 'usatechidxusd',
+    label: 'US 100 Tech (USATECH.IDX/USD)',
+    category: 'Indices'
+  },
+  {
     id: 'tecdaxedeeur',
     label: 'TECDAXE.DE/EUR',
     category: 'Indices'
