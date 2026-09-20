@@ -28,7 +28,7 @@ export default function DeepInsights({ kpis, dayStats }: DeepInsightsProps): Rea
             <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               Streaks
             </CardTitle>
-            <Flame className="size-4 text-chart-4" />
+            <Flame className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent className="flex flex-col gap-1.5 pt-1">
             <div className="flex items-center justify-between text-xs">
@@ -85,7 +85,7 @@ export default function DeepInsights({ kpis, dayStats }: DeepInsightsProps): Rea
             <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               Best & Worst
             </CardTitle>
-            <Trophy className="size-4 text-chart-3" />
+            <Trophy className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent className="flex flex-col gap-1.5 pt-1">
             <div className="flex items-center justify-between text-xs">
