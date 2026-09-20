@@ -11,13 +11,13 @@ This project is a localized, fully offline, desktop-based backtesting applicatio
 - **State Management:** Zustand (for playback time, account balance, active trades).
 - **Charting Engine:** `@luxalgo/vela` and `@luxalgo/vela/workspace` (for charts and native drawing tools).
 - **Local Database / Cache:** SQLite (using `better-sqlite3` via Electron IPC) to cache downloaded sessions.
-- **Data Fetcher:** `dukascopy-node` (runs in the Electron Main Process to scrape data directly from Dukascopy).
+- **Data Fetcher:** Dukascopy native-candle API — one `BID_candles_min_1.bi5` request/day/symbol (LZMA-decoded with `lzma-native` in the Electron Main Process); coarser timeframes derived locally. This replaced `dukascopy-node`, whose tick-based path tripped Dukascopy's rate limiter (HTTP 429).
 
 ## Phase 1: Environment Setup
 
 1. Initialize a new Electron + Vite + React + TypeScript project (e.g., using `electron-vite`).
 2. Install frontend dependencies: `zustand`, `@luxalgo/vela`, `lucide-react`, and `shadcn/ui` (for the download menus and date pickers).
-3. Install backend dependencies: `better-sqlite3`, `dukascopy-node`.
+3. Install backend dependencies: `better-sqlite3`, `lzma-native`.
 4. Configure Electron IPC (Inter-Process Communication):
    - Create handlers in the `main` process for triggering Dukascopy downloads and querying the SQLite cache.
    - Expose these to the React frontend via a `preload` script (e.g., `window.api.downloadData()`, `window.api.getCachedData()`).
@@ -44,19 +44,17 @@ This project is a localized, fully offline, desktop-based backtesting applicatio
 2. **The Fetch Handler (Electron Main Process):**
    - Write an IPC handler `handleDownload(symbol, startDate, endDate)`.
    - First, check the SQLite database to see if this exact data already exists in the cache. If yes, return it instantly.
-   - If not, use `dukascopy-node` to fetch the data.
+   - If not, use the Dukascopy native candle feed (`src/main/dukascopy.ts` + `src/main/bi5.ts`).
    - _Example implementation:_
-     ```javascript
-     import { getHistoricalData } from 'dukascopy-node'
-     // Fetch 1m data for the requested dates
-     const data = await getHistoricalData({
-       instrument: symbol,
-       dates: { from: startDate, to: endDate },
-       timeframe: 'm1',
-       format: 'json'
-     })
+     ```typescript
+     import { fetchFromDukascopy } from './main/dukascopy'
+     // Fetchs a timeframe, caching per-day; native M1 files + local aggregation.
+     const { candles } = await fetchFromDukascopy(
+       { symbol, timeframe, startDate, endDate },
+       (message, percent) => { /* stream progress to renderer */ }
+     )
      ```
-   - Bulk-insert the returned JSON data into the `cached_candles` SQLite table.
+   - Bulk-insert the returned candles into the `cached_candles` SQLite table.
    - Emit IPC events back to the frontend with download progress (e.g., "Downloading...", "Saving to cache...", "Ready").
 
 ## Phase 3: The Asset Selector & UI
@@ -67,7 +65,7 @@ This project is a localized, fully offline, desktop-based backtesting applicatio
    - **Asset:** Dropdown menu mapping to Dukascopy tickers (e.g., `eurusd`, `gbpusd`, `xauusd`).
    - **Date Range:** Start Date and End Date pickers.
    - **Starting Balance:** (e.g., $100,000).
-2. **Loading State:** When the user clicks "Start Session", display a progress bar. This UI will listen to the IPC progress events while the Electron backend runs `dukascopy-node`.
+2. **Loading State:** When the user clicks "Start Session", display a progress bar. This UI will listen to the IPC progress events while the Electron backend runs the Dukascopy fetcher (`src/main/dukascopy.ts`).
 3. **Chart UI:** Once data is ready, initialize the `@luxalgo/vela/workspace` component and render the custom playback control panel (Play, Pause, Step Forward, Go To, Speed Slider).
 
 ## Phase 4: The Playback Loop (Core Logic)
@@ -130,6 +128,6 @@ This project is a localized, fully offline, desktop-based backtesting applicatio
 
 ## Implementation Rules for Coding AI
 
-- Use `dukascopy-node` specifically in the Electron Main Process. Browser environments (React) cannot run it directly due to CORS and Node-specific file system dependencies.
+- Use the Dukascopy fetch (`src/main/dukascopy.ts`) specifically in the Electron Main Process. Browser environments (React) cannot reach Dukascopy directly due to CORS and Node-specific dependencies (`lzma-native`, SQLite).
 - Ensure the SQLite database operates purely as a cache to speed up subsequent loads of the same date ranges.
 - Prioritize React performance. Use `useRef` for the playback loop interval to avoid unnecessary re-renders, updating the Zustand state and Vela chart directly.

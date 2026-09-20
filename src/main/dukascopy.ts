@@ -1,26 +1,39 @@
-import { getHistoricalRates, Instrument, Timeframe } from 'dukascopy-node'
-import type { InstrumentType, JsonItem, TimeframeType } from 'dukascopy-node'
-import type { Candle, SingleTimeframeRequest } from '../shared/ipc'
-import { queryCandlesRange } from './db'
-
 /**
  * On-demand Dukascopy fetch (Phase 2).
  *
- * Strategy: instead of handing the whole date range to `dukascopy-node` in one
- * shot (which batches internally but gives us no visibility), we iterate
- * day-by-day ourselves:
+ * Strategy (ported from the `dukascopy-downloader` project, which the old
+ * `dukascopy-node` path could not match):
  *
- *   - per-day cache skip: days already stored in SQLite are served from the
- *     local cache (no network), which fills gaps in partially-cached ranges;
- *   - per-day progress events stream back to the renderer (`onProgress`);
- *   - small pause between network calls keeps Dukascopy's rate limiter happy.
+ *   - Fetch PRE-COMPUTED M1 candle files, one ~11 KiB request per day, instead
+ *     of `dukascopy-node`'s tick-based path. 1 request/day vs 24 tick
+ *     downloads = the 24x request reduction that keeps us under Dukascopy's
+ *     aggressive rate limiter (the old path tripped 429 constantly).
+ *   - Send browser-like headers: Dukascopy's datafeed 429/503-blocks
+ *     requests without a browser User-Agent + Referer.
+ *   - Coarser timeframes (m5..d1) are derived locally from the day's M1
+ *     candles, so one file download serves every timeframe.
+ *   - Per-day cache skip: days already stored in SQLite are served from the
+ *     local cache (no network).
+ *   - Exponential backoff + jitter on retries (10 attempts, cap 30s) and a
+ *     small pause between days keep the limiter happy.
  *
  * This function only *reads* the cache (to skip days) and returns the merged
  * candle list; the caller in `ipc.ts` persists the result with one upsert.
  *
- * `dukascopy-node` runs in the Electron main process only — the renderer
- * cannot reach Dukascopy directly (CORS + Node-only deps).
+ * LZMA decoding (`lzma-native`) is an N-API native module that runs in the
+ * Electron main process without rebuild.
  */
+
+import type { Candle, SingleTimeframeRequest } from '../shared/ipc'
+import { TIMEFRAMES, TIMEFRAME_MS } from '../shared/timeframes'
+import { queryCandlesRange } from './db'
+import {
+  aggregateM1,
+  decompressBi5,
+  getPointValue,
+  normalizeSymbolForUrl,
+  parseNativeCandles
+} from './bi5'
 
 export type ProgressReporter = (message: string, percent?: number) => void
 
@@ -35,16 +48,25 @@ export interface FetchResult {
 
 const DAY_MS = 86_400_000
 
-/** Polite pause between network requests (Dukascopy rate-limits aggressively). */
-const PAUSE_BETWEEN_DAYS_MS = 200
-
-/** Retry/backoff handed to dukascopy-node for transient 429/network failures. */
-const RETRY = {
-  retryCount: 3,
-  retryOnEmpty: false, // treat empty trading days (weekends/holidays) as "no data", not errors
-  failAfterRetryCount: true,
-  pauseBetweenRetriesMs: 750
+/** Browser-like identity Dukascopy expects from datafeed clients. */
+const HEADERS = {
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+    '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  Accept: '*/*',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Connection': 'keep-alive',
+  Referer: 'https://www.dukascopy.com/swiss/english/marketwatch/historical/'
 }
+
+const BASE_URL = 'https://www.dukascopy.com/datafeed'
+
+const DOWNLOAD_ATTEMPTS = 10
+const RETRY_MAX_DELAY_MS = 30_000
+const REQUEST_TIMEOUT_MS = 30_000
+
+/** Polite pause between network requests (Dukascopy rate-limits aggressively). */
+const PAUSE_BETWEEN_DAYS_MS = 300
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -64,12 +86,10 @@ function isoFromDayMs(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10)
 }
 
-/** dukascopy-node shapes failures as Error *or* a bare { validationErrors } object. */
+/** Describe any thrown value for user-facing errors. */
 export function describeError(err: unknown): string {
   if (err instanceof Error) return err.message
   if (err && typeof err === 'object') {
-    const ve = (err as { validationErrors?: Array<{ message?: string }> }).validationErrors
-    if (Array.isArray(ve) && ve.length > 0) return ve.map((e) => e.message ?? '').join('; ')
     try {
       return JSON.stringify(err)
     } catch {
@@ -79,30 +99,84 @@ export function describeError(err: unknown): string {
   return String(err)
 }
 
-/** Validates a symbol/timeframe against dukascopy-node's own enums up-front. */
+/** Validates symbol/timeframe against what the datafeed actually supports. */
 function assertSupported(symbol: string, timeframe: string): void {
-  if (!(symbol.toLowerCase() in Instrument)) {
+  if (!/^[a-z0-9]+$/.test(symbol)) {
     throw new Error(
-      `"${symbol}" is not a Dukascopy instrument id. Example ids: eurusd, gbpusd, usdjpy, xauusd, btcusd.`
+      `"${symbol}" is not a supported Dukascopy symbol. Example ids: eurusd, gbpusd, usdjpy, xauusd.`
     )
   }
-  if (!(timeframe in Timeframe)) {
+  if (!(TIMEFRAMES as readonly string[]).includes(timeframe)) {
     throw new Error(
-      `"${timeframe}" is not a supported timeframe (tick, s1, m1, m5, m15, m30, h1, h4, d1, mn1).`
+      `"${timeframe}" is not a supported timeframe (${TIMEFRAMES.join(', ')}).`
     )
   }
 }
 
-/** Map a dukascopy-node JSON candle onto our Candle shape (volume may be omitted). */
-function toCandle(item: JsonItem): Candle {
-  return {
-    timestamp: item.timestamp, // milliseconds since epoch (JSON output), matching our schema
-    open: item.open,
-    high: item.high,
-    low: item.low,
-    close: item.close,
-    volume: item.volume ?? 0
+/** Native M1 candle file URL for one UTC day. Month is 0-indexed (00 = Jan). */
+function candleUrl(symbol: string, dayStartMs: number): string {
+  const d = new Date(dayStartMs)
+  const year = d.getUTCFullYear()
+  const month0 = String(d.getUTCMonth()).padStart(2, '0')
+  const day = String(d.getUTCDate()).padStart(2, '0')
+  return `${BASE_URL}/${normalizeSymbolForUrl(symbol)}/${year}/${month0}/${day}/BID_candles_min_1.bi5`
+}
+
+/**
+ * Fetch one day's native M1 candle file with exponential backoff + jitter.
+ *
+ * @returns parsed M1 candles for that day ([] when the file is missing).
+ */
+async function fetchDayM1(symbol: string, dayStartMs: number, onProgress: ProgressReporter, dayLabel: string): Promise<Candle[]> {
+  const url = candleUrl(symbol, dayStartMs)
+  const point = getPointValue(symbol)
+
+  const wait = (attempt: number, base: number): number =>
+    Math.min(base * 2 ** attempt + 500 + Math.random() * 1500, RETRY_MAX_DELAY_MS)
+
+  for (let attempt = 0; attempt < DOWNLOAD_ATTEMPTS; attempt++) {
+    try {
+      const resp = await fetch(url, {
+        headers: HEADERS,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+      })
+
+      if (resp.status === 200) {
+        const raw = Buffer.from(await resp.arrayBuffer())
+        const decompressed = await decompressBi5(raw)
+        return parseNativeCandles(decompressed, point, dayStartMs)
+      }
+
+      if (resp.status === 404) {
+        return [] // No data for this period (unsupported symbol / closed day).
+      }
+
+      // 429 (rate limit) / 503 (server busy) / other — back off and retry.
+      if (attempt < DOWNLOAD_ATTEMPTS - 1) {
+        const retryAfter = Number(resp.headers.get('retry-after'))
+        const delay = retryAfter > 0
+          ? retryAfter * 1000
+          : wait(attempt, resp.status === 429 || resp.status === 503 ? 1000 : 500)
+        onProgress(
+          `Dukascopy busy (HTTP ${resp.status}) — retry ${attempt + 1}/${DOWNLOAD_ATTEMPTS} (${dayLabel})…`
+        )
+        await sleep(Math.min(delay, RETRY_MAX_DELAY_MS))
+        continue
+      }
+      throw new Error(`HTTP ${resp.status} after ${DOWNLOAD_ATTEMPTS} attempts`)
+    } catch (err) {
+      if (attempt < DOWNLOAD_ATTEMPTS - 1) {
+        if (err instanceof Error && err.name === 'TimeoutError') {
+          onProgress(`Dukascopy request timed out — retry ${attempt + 1}/${DOWNLOAD_ATTEMPTS} (${dayLabel})…`)
+        }
+        await sleep(wait(attempt, 1000))
+        continue
+      }
+      throw err
+    }
   }
+
+  throw new Error(`Dukascopy fetch failed for ${symbol} on ${dayLabel}`)
 }
 
 /**
@@ -153,28 +227,11 @@ export async function fetchFromDukascopy(
       continue
     }
 
-    // 2. Fetch the missing day from Dukascopy.
-    //    `to` is exclusive in dukascopy-node (`>= from && < to`), so a day's
-    //    range is [dayStart, nextDayStart). utcOffset 0 keeps everything UTC.
+    // 2. Fetch the missing day's M1 file, derive the requested timeframe.
     let dayCandles: Candle[]
     try {
-      const items = await getHistoricalRates({
-        instrument: symbol as InstrumentType,
-        dates: { from: new Date(dayStart), to: new Date(dayStart + DAY_MS) },
-        timeframe: timeframe as TimeframeType,
-        format: 'json',
-        priceType: 'bid',
-        utcOffset: 0,
-        volumes: true,
-        volumeUnits: 'units', // raw traded units, not the lib's "millions" shorthand
-        ignoreFlats: true, // skip non-trading periods (weekends etc.)
-        ...RETRY
-      })
-      // Belt-and-suspenders: keep only candles inside this UTC day, time-ordered.
-      dayCandles = (items as JsonItem[])
-        .map(toCandle)
-        .filter((c) => c.timestamp >= dayStart && c.timestamp <= dayEnd)
-        .sort((a, b) => a.timestamp - b.timestamp)
+      const m1 = await fetchDayM1(symbol, dayStart, onProgress, dayLabel)
+      dayCandles = aggregateM1(m1, TIMEFRAME_MS[timeframe as keyof typeof TIMEFRAME_MS], dayStart, dayEnd)
     } catch (err) {
       throw new Error(
         `Dukascopy fetch failed for ${symbol} ${timeframe} on ${dayLabel}: ${describeError(err)}`

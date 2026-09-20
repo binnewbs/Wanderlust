@@ -1,9 +1,9 @@
 /**
  * Curated list of Dukascopy instruments for the New Session asset selector.
- * Generated from dukascopy-node's own instrument metadata (see scripts/ or
- * node --eval) — ids here are valid Dukascopy instrument codes.
- * Keep in sync with the data source; mostly static so the renderer never has
- * to import the main-process-only dukascopy-node package.
+ * Ids are Dukascopy datafeed codes (see the dukascopy-downloader project's
+ * symbol list); only FX + metals are guaranteed to have pre-computed candle
+ * files on the public feed. Keep in sync with the data source; mostly static
+ * so the renderer never has to import any main-process-only package.
  */
 export interface Asset {
   /** Dukascopy instrument id, lowercase (e.g. 'eurusd'). */
