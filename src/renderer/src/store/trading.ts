@@ -37,8 +37,12 @@ export interface Order {
   takeProfit: number
   /** % of the account balance risked at fill. */
   riskPercent: number
-  /** Estimated units at submission, used solely for pending-order PnL previews.
-   * Actual `size` is still calculated from balance when the order fills. */
+  /** Position size in units, fixed at submission from the then-current balance
+   *  and the entry/SL levels (limit/stop fill exactly at `orderPrice`, market at
+   *  the projected latest close). This is the ACTUAL size a pending order fills
+   *  with — dragging SL/TP on a pending order must change the trade's risk/PnL,
+   *  not silently re-size it. Older orders without `previewSize` fall back to a
+   *  fill-time `sizeForRisk` recompute. */
   previewSize?: number
   /** Session index at submission — candles at/before it can never fill this. */
   submissionIndex: number
@@ -193,7 +197,11 @@ export function restoreOrdersAt(
  *  - pending orders try to FILL first: market fills at the candle's open (the
  *    candle right after submission); a buy-limit on `low ≤ price` / sell-limit
  *    on `high ≥ price`; a buy-stop on `high ≥ price` / sell-stop on
- *    `low ≤ price`. Sizing happens at fill from the then-current balance.
+ *    `low ≤ price`. Sizing is decided at SUBMISSION (`previewSize`, from the
+ *    then-current balance and entry/SL); the fill reuses that size so a dragged
+ *    SL/TP on a pending order changes the filled trade's risk instead of being
+ *    re-sized away. Orders without a captured size (legacy saves) are sized at
+ *    fill from the then-current balance.
  *  - filled trades then evaluate STOP-LOSS BEFORE TAKE-PROFIT on the same
  *    candle (conservative, per plan.md). Long: `low ≤ SL` stops, else
  *    `high ≥ TP` profits. Short mirrored.
@@ -253,7 +261,11 @@ export function evaluateOrders(
         fillPrice,
         filledAtTime: candle.timestamp,
         filledAtIndex: idx,
-        size: sizeForRisk(fillPrice, order.stopLoss, order.riskPercent, bal)
+        // Size is fixed at submission (`previewSize`): dragging the SL/TP on a
+        // pending order must change the filled trade's risk/PnL, not be re-sized
+        // back to the initial risk per trade. Only fall back to a fill-time
+        // risk-size for orders that predate `previewSize` (legacy saves).
+        size: order.previewSize ?? sizeForRisk(fillPrice, order.stopLoss, order.riskPercent, bal)
       }
       next[pos.get(order.id)!] = filled
     }

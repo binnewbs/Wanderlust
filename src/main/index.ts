@@ -504,13 +504,18 @@ function createWindow(): void {
           };
 
           // ---- expected values, recomputed from the very candles being played
+          // Market-order size is fixed at SUBMISSION from the latest revealed
+          // close (previewSize); limit/stop fix it from their order price.
           const startBalance = readBalance();
           const cA = candles[4], cB = candles[5], cC = candles[6], cD = candles[7];
-          const sizeA = (startBalance * 0.01) / (cA.open - cA.low + 0.002);
+          // A and B are market orders submitted at currentIndex 4 and 5 → the
+          // projected entry is candles[3].close and candles[4].close.
+          const riskA = Math.abs(candles[3].close - (cA.low - 0.002));
+          const sizeA = riskA > 0 ? (startBalance * 0.01) / riskA : 0;
           const pnlA = (cA.high - cA.open) * sizeA; // TP at high, long
           const balAfterA = startBalance + pnlA;
-          const bDist = cB.open - cB.low;
-          const sizeB = bDist > 0 ? (balAfterA * 0.01) / bDist : 0; // open==low ⇒ 0 size
+          const riskB = Math.abs(candles[4].close - cB.low);
+          const sizeB = riskB > 0 ? (balAfterA * 0.01) / riskB : 0;
           const pnlB = (cB.low - cB.open) * sizeB; // SL at low, long ⇒ ≤ 0
           const balAfterB = balAfterA + pnlB;
           const sizeC = (balAfterB * 0.01) / 0.002; // |entry − SL| = 0.002 fixed
@@ -651,7 +656,10 @@ function createWindow(): void {
 
           const balBefore = readBalance();
           const cE = candles[9]; // submitted at index 9 → fills candle idx 9
-          const sizeE = (balBefore * 0.01) / (cE.open - cE.low + 0.002);
+          // Market-order size is fixed at submission from the latest revealed
+          // close (currentIndex 9 → candles[8].close).
+          const riskE = Math.abs(candles[8].close - (cE.low - 0.002));
+          const sizeE = riskE > 0 ? (balBefore * 0.01) / riskE : 0;
           const pnlE = (cE.high - cE.open) * sizeE;
           const balAfter = balBefore + pnlE;
 
