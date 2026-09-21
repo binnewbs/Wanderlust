@@ -1,11 +1,15 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 import type {
+  CacheStatsResponse,
   CacheSummaryResponse,
   CachedDataResponse,
+  DeleteCacheRequest,
+  DeleteCacheResult,
   DownloadBatchResult,
   DownloadProgressEvent,
   DownloadRequest,
-  DownloadResult
+  DownloadResult,
+  VacuumCacheResult
 } from '../shared/ipc'
 
 export interface WanderlustApi {
@@ -19,6 +23,12 @@ export interface WanderlustApi {
   getCachedData: (request: DownloadRequest) => Promise<CachedDataResponse>
   /** Lists every (symbol, timeframe) range stored in the cache. */
   getCacheSummary: () => Promise<CacheSummaryResponse>
+  /** Cache totals, per-group estimates and the database's on-disk size. */
+  getCacheStats: () => Promise<CacheStatsResponse>
+  /** Deletes cached candles — all of them, or only the given symbol/timeframe. */
+  deleteCacheData: (request?: DeleteCacheRequest) => Promise<DeleteCacheResult>
+  /** Reclaims disk space freed by deletes; resolves with the new on-disk size. */
+  vacuumCache: () => Promise<VacuumCacheResult>
   /** Subscribes to download progress events; returns an unsubscribe function. */
   onDownloadProgress: (callback: (event: DownloadProgressEvent) => void) => () => void
 }

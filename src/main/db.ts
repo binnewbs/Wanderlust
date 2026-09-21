@@ -1,7 +1,8 @@
 import { join } from 'path'
+import { statSync } from 'fs'
 import { app } from 'electron'
 import Database from 'better-sqlite3'
-import type { Candle, CacheEntry, SingleTimeframeRequest } from '../shared/ipc'
+import type { Candle, CacheEntry, CacheStats, SingleTimeframeRequest } from '../shared/ipc'
 
 /**
  * SQLite cache for downloaded candles.
@@ -32,11 +33,25 @@ export const CACHE_SCHEMA = `
 let db: Database.Database | null = null
 let dbFilePath: string | null = null
 
+/**
+ * Estimated on-disk bytes one cached candle occupies. A row stores a short
+ * symbol/timeframe plus an integer timestamp and five reals (~60 bytes), and
+ * the lookup index roughly doubles that. Deliberately a constant: SQLite has no
+ * portable per-table byte counter, and the storage UI labels the figure
+ * "approx." while the totals use the real file sizes.
+ */
+const CACHE_BYTES_PER_CANDLE = 112
+
+/** Resolves (and caches) the cache database's path without opening it. */
+function resolveDbFilePath(): string {
+  dbFilePath ??= join(app.getPath('userData'), 'wanderlust-cache.db')
+  return dbFilePath
+}
+
 /** Returns a lazily-initialized handle to the SQLite cache database. */
 export function getDb(): Database.Database {
   if (!db) {
-    dbFilePath ??= join(app.getPath('userData'), 'wanderlust-cache.db')
-    db = new Database(dbFilePath)
+    db = new Database(resolveDbFilePath())
     db.pragma('journal_mode = WAL')
     db.exec(CACHE_SCHEMA)
     db.exec(
@@ -162,4 +177,86 @@ export function getCacheSummary(): CacheEntry[] {
     last: number
   }>
   return rows.map((r) => ({ ...r }))
+}
+
+/** On-disk sizes of the cache database and its WAL sidecar files. */
+function getCacheFileSizes(): {
+  dbSizeBytes: number
+  walSizeBytes: number
+  shmSizeBytes: number
+  totalSizeBytes: number
+} {
+  const base = resolveDbFilePath()
+  const sizeOf = (path: string): number => {
+    try {
+      return statSync(path).size
+    } catch {
+      return 0 // not created yet (e.g. no WAL after a clean checkpoint)
+    }
+  }
+  const dbSizeBytes = sizeOf(base)
+  const walSizeBytes = sizeOf(`${base}-wal`)
+  const shmSizeBytes = sizeOf(`${base}-shm`)
+  return {
+    dbSizeBytes,
+    walSizeBytes,
+    shmSizeBytes,
+    totalSizeBytes: dbSizeBytes + walSizeBytes + shmSizeBytes
+  }
+}
+
+/**
+ * Cache totals for the Settings → Storage screen: per-group estimates plus the
+ * database's real on-disk footprint. Group sizes are approximate; the totals
+ * come straight from the filesystem.
+ */
+export function getCacheStats(): CacheStats {
+  const entries = getCacheSummary().map((entry) => ({
+    ...entry,
+    sizeBytes: entry.candles * CACHE_BYTES_PER_CANDLE
+  }))
+  const totalCandles = entries.reduce((sum, e) => sum + e.candles, 0)
+  const totalEntryBytes = entries.reduce((sum, e) => sum + e.sizeBytes, 0)
+  return {
+    entries,
+    totalCandles,
+    totalEntryBytes,
+    ...getCacheFileSizes()
+  }
+}
+
+/**
+ * Deletes cached candles. With no arguments the whole cache is cleared; pass a
+ * `symbol` and/or `timeframe` to remove only the matching groups. Returns the
+ * number of rows removed.
+ */
+export function deleteCandles(symbol?: string, timeframe?: string): number {
+  const clauses: string[] = []
+  const params: string[] = []
+  if (symbol) {
+    clauses.push('symbol = ?')
+    params.push(symbol.toLowerCase())
+  }
+  if (timeframe) {
+    clauses.push('timeframe = ?')
+    params.push(timeframe)
+  }
+  const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : ''
+  const info = getDb()
+    .prepare(`DELETE FROM cached_candles${where}`)
+    .run(...params)
+  return info.changes
+}
+
+/**
+ * Reclaims disk space freed by {@link deleteCandles}. SQLite keeps deleted
+ * pages (and the WAL) around, so a checkpoint + VACUUM is what actually shrinks
+ * the file the user sees. Returns the on-disk sizes after vacuuming.
+ */
+export function vacuumCache(): { totalSizeBytes: number } {
+  const handle = getDb()
+  handle.pragma('wal_checkpoint(TRUNCATE)')
+  handle.exec('VACUUM')
+  handle.pragma('wal_checkpoint(TRUNCATE)')
+  return getCacheFileSizes()
 }

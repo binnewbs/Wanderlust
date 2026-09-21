@@ -13,6 +13,7 @@ import {
   type PriceRange,
   type RendererBridge
 } from './chartBridge'
+import { isChartViewVisible } from './chartVisible'
 
 /**
  * OrderLevelsOverlay — the SAFE draggable TP/SL "order-level" lines.
@@ -286,6 +287,18 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
     const place = (): void => {
       if (!alive) return
       if (dbg) dbg.place += 1
+      // Fast path — the loop runs continuously (60 fps) for the WHOLE session,
+      // so it must cost ~nothing when there is nothing to do:
+      //  - no pending/filled orders → no strips → skip renderer resolve and
+      //    every getBoundingClientRect (forced layout) that placement does;
+      //  - the chart pane is hidden under the Analytics tab → skip placement
+      //    entirely (strips re-glue on the first visible frame).
+      // The hooks below only need to exist when strips are being placed, so an
+      // early return here is safe: the moment an order appears (or the pane
+      // returns), the full path runs and (re)binds viewport/canvas/resize
+      // listeners as usual.
+      if (stripsRef.current.length === 0) return
+      if (!isChartViewVisible()) return
       try {
         const renderer = rendererOf(velaChartRef.current)
         if (!renderer) {

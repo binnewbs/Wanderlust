@@ -11,6 +11,7 @@ import {
   sessionTicker
 } from './sessionProvider'
 import { dukascopyTimeframe, timeframeMs, velaTimeframe, VELA_TIMEFRAMES } from './vela'
+import { isChartViewVisible, onChartViewVisible } from './chartVisible'
 import { rendererOf, velaChartRef, type PriceRange, type ScaleHolderBridge } from './chartBridge'
 import OrderLevelsOverlay from './OrderLevelsOverlay'
 
@@ -243,6 +244,11 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
     // painted (market:changed).
     let pendingPriceScales: Map<ScaleHolderBridge, PriceRange> = new Map()
     const pushSlice = (): void => {
+      // While the Analytics tab is showing the chart pane is `visibility:
+      // hidden` — skip every native reload + repaint for invisible pixels. The
+      // store (index/orders/balance) keeps advancing; the `onChartViewVisible`
+      // flush below catches the tape up in a single push when the pane returns.
+      if (!isChartViewVisible()) return
       const st = useSessionStore.getState()
       const session = st.session
       if (!session) return
@@ -321,10 +327,36 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
     }
 
     // Playback advance: the store index moves (interval in PlaybackPanel) →
-    // re-apply the slice, without a React re-render of this component.
+    // re-apply the slice, without a React re-render of this component. While
+    // PLAYING, pushes are coalesced to ONE per animation frame carrying the
+    // latest index: `setMarket` is a full offline-market reload (bar series +
+    // indicators + chart engine), so queueing every tick (up to 20/s) behind a
+    // slow load only builds backlog and stutter. The display can't show more
+    // than one frame per 16ms anyway, and skipping an intermediate frame is
+    // invisible at playback speeds. Manual steps / jumps (paused) push
+    // synchronously so controls stay instant.
+    let rafPending = false
+    let rafId = 0
+    const requestSlice = (): void => {
+      if (!isChartViewVisible()) return
+      if (!useSessionStore.getState().playing) {
+        pushSlice()
+        return
+      }
+      if (rafPending) return
+      rafPending = true
+      rafId = requestAnimationFrame(() => {
+        rafPending = false
+        pushSlice()
+      })
+    }
     const unsubIndex = useSessionStore.subscribe((state, prev) => {
-      if (state.currentIndex !== prev.currentIndex) pushSlice()
+      if (state.currentIndex !== prev.currentIndex) requestSlice()
     })
+    // The pane became visible again after playback ran hidden: flush the latest
+    // reveal immediately (the keyed guard would otherwise no-op forever, since
+    // the index already moved and no new store event is coming).
+    const unsubVisible = onChartViewVisible(() => pushSlice())
     // Topbar timeframe switch: Vela switches in place (provider serves the new
     // timeframe's reveal) — repin the same reveal as offline data. Re-entrant
     // `market:changed` echoes (from our own setMarket) hit the guard and no-op.
@@ -434,7 +466,9 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
       unsubEdited()
       unsubRemoved()
       unsubIndex()
+      unsubVisible()
       unsubMarket()
+      if (rafPending) cancelAnimationFrame(rafId)
       // Snapshot the workspace BEFORE it is destroyed — the drawings and the
       // adjusted chart settings (timeframe, price style, renderer config,
       // indicator ledger) get stashed per session, so returning from the main

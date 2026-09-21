@@ -68,6 +68,8 @@ export interface SavedSession {
   playbackTimeframe: Timeframe
   createdAt: number
   updatedAt: number
+  /** Pinned sessions are hoisted above the rest in the main menu. */
+  pinned?: boolean
 }
 
 export interface ActiveSession extends NewSessionInput {
@@ -158,6 +160,12 @@ export interface SessionState {
   resumeSavedSession: (id: string) => Promise<void>
   deleteSavedSession: (id: string) => void
   saveCurrentSessionState: () => void
+  /** Pin/unpin a session. Pinning hoists it to the top of the list; unpinning
+   *  drops it to the top of the unpinned group. */
+  toggleSavedSessionPin: (id: string) => void
+  /** Replace the manual order of saved sessions (drag-to-rearrange). Ids that
+   *  are missing are appended, pinned sessions are re-hoisted. */
+  setSavedSessionsOrder: (ids: string[]) => void
 
   // --- chart-state persistence (Phase 7) ---
   /** Stash a Vela workspace snapshot (drawings + adjusted chart settings) for
@@ -306,8 +314,7 @@ function loadChartStatesFromStorage(): {
 // session id. Survive the round trip through the main menu AND a full app
 // restart (they are persisted to localStorage) — a reopened session resumes
 // the chart exactly where it left off.
-const { states: savedChartStates, selections: savedChartSelections } =
-  loadChartStatesFromStorage()
+const { states: savedChartStates, selections: savedChartSelections } = loadChartStatesFromStorage()
 
 function persistChartStatesToStorage(): void {
   if (typeof window === 'undefined' || !window.localStorage) return
@@ -334,7 +341,8 @@ function loadSavedSessionsFromStorage(): SavedSession[] {
     return parsed.map((s, idx) => ({
       ...s,
       id: s.id || `session-${idx}-${Date.now().toString(36)}`,
-      name: s.name || `${s.asset?.label ?? 'EUR/USD'} Replay`
+      name: s.name || `${s.asset?.label ?? 'EUR/USD'} Replay`,
+      pinned: Boolean(s.pinned)
     }))
   } catch {
     return []
@@ -348,6 +356,13 @@ function persistSavedSessionsToStorage(sessions: SavedSession[]): void {
   } catch {
     // ignore
   }
+}
+
+/** Stable partition: pinned sessions first, everything else after. The stored
+ *  array order IS the display order, so every mutation funnels through here. */
+function hoistPinned(sessions: SavedSession[]): SavedSession[] {
+  if (!sessions.some((s) => s.pinned)) return sessions
+  return [...sessions.filter((s) => s.pinned), ...sessions.filter((s) => !s.pinned)]
 }
 
 async function loadCandlesAndRunUp(
@@ -537,7 +552,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         balance: rewound.balance
       }
     }),
-  setPlaybackTimeframe: (playbackTimeframe) => set({ playbackTimeframe }),
+  setPlaybackTimeframe: (playbackTimeframe) =>
+    set((s) => (s.playbackTimeframe === playbackTimeframe ? s : { playbackTimeframe })),
   skipToStart: () =>
     set((s) => {
       if (hasOpenPosition(s.orders)) return s
@@ -580,7 +596,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       )
       return { playing: false, currentIndex: nextIndex, orders: ev.orders, balance: ev.balance }
     }),
-  setSpeed: (speed) => set({ speed }),
+  setSpeed: (speed) => set((s) => (s.speed === speed ? s : { speed })),
 
   // --- simulated account + orders (Phase 5) ---
   submitOrder: (input) => {
@@ -706,7 +722,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     })
   },
-  setRiskPercent: (pct) => set({ riskPercent: Math.min(100, Math.max(0, pct)) }),
+  setRiskPercent: (pct) =>
+    set((s) => {
+      const clamped = Math.min(100, Math.max(0, pct))
+      return s.riskPercent === clamped ? s : { riskPercent: clamped }
+    }),
   /** Reprice an order's stop-loss/take-profit by live drag on the chart's
    *  horizontal level strips (Phase 6 — OrderLevelsOverlay). Pending/running
    *  orders reprice; closed orders are read-only. A dragged level that would
@@ -905,7 +925,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         updatedAt: Date.now()
       }
 
-      const updated = [saved, ...get().savedSessions.filter((s) => s.id !== sessionId)]
+      const updated = hoistPinned([saved, ...get().savedSessions.filter((s) => s.id !== sessionId)])
       persistSavedSessionsToStorage(updated)
 
       activeSessionsCache.set(sessionId, active)
@@ -1068,6 +1088,44 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
+  toggleSavedSessionPin: (id) => {
+    const sessions = get().savedSessions
+    const target = sessions.find((s) => s.id === id)
+    if (!target) return
+    const rest = sessions.filter((s) => s.id !== id)
+    let updated: SavedSession[]
+    if (target.pinned) {
+      // Unpin: drop it just below the remaining pinned group.
+      const unpinned = { ...target, pinned: false }
+      const lastPinned = rest.reduce((acc, s, idx) => (s.pinned ? idx : acc), -1)
+      updated = [...rest.slice(0, lastPinned + 1), unpinned, ...rest.slice(lastPinned + 1)]
+    } else {
+      // Pin: hoist it to the very top.
+      updated = [{ ...target, pinned: true }, ...rest]
+    }
+    persistSavedSessionsToStorage(updated)
+    set({ savedSessions: updated })
+  },
+
+  setSavedSessionsOrder: (ids) => {
+    const sessions = get().savedSessions
+    const byId = new Map(sessions.map((s) => [s.id, s]))
+    const seen = new Set<string>()
+    const ordered: SavedSession[] = []
+    for (const id of ids) {
+      const s = byId.get(id)
+      if (s && !seen.has(id)) {
+        ordered.push(s)
+        seen.add(id)
+      }
+    }
+    // Anything the caller omitted keeps its previous slot at the end.
+    for (const s of sessions) if (!seen.has(s.id)) ordered.push(s)
+    const updated = hoistPinned(ordered)
+    persistSavedSessionsToStorage(updated)
+    set({ savedSessions: updated })
+  },
+
   exitToMainMenu: () => {
     const {
       session,
@@ -1171,12 +1229,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 // Stream main-process download progress into the store while a download runs.
 // Module scope (not a React effect) so StrictMode's double-mount never
 // double-subscribes; HMR re-imports are guarded by the existing handle.
+//
+// The feed is bounded to a trailing window: the modal renders every event, so
+// an unbounded log would mean unbounded DOM + memory on very long batches
+// (7 timeframes × many days → hundreds of events). A 50-event tail keeps the
+// whole download visible while capping growth.
+const PROGRESS_LOG_LIMIT = 50
 let progressUnsub: (() => void) | null = null
 if (!progressUnsub && typeof window !== 'undefined' && window.api) {
   progressUnsub = window.api.onDownloadProgress((event) => {
     const { status } = useSessionStore.getState()
     if (status === 'downloading') {
-      useSessionStore.setState((s) => ({ progress: [...s.progress, event] }))
+      useSessionStore.setState((s) => ({
+        progress: [...s.progress, event].slice(-PROGRESS_LOG_LIMIT)
+      }))
     }
   })
 }

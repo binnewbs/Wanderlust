@@ -81,6 +81,53 @@ function runUpOhlcvFor(session: ActiveSession, dukaTf: string): OHLCV[] {
   return bucket.runUp[dukaTf]
 }
 
+// Sequential-reveal slice cache. The base-timeframe playback slice grows by
+// exactly ONE bar per tick, so re-slicing the whole dataset + re-concatenating
+// the run-up every tick (up to 20×/s on long sessions) is pure churn. When the
+// previous call was exactly one index behind, grow that slice with `concat` —
+// which yields a NEW array, so the one previously handed to Vela is never
+// mutated underneath an in-flight load. Any jump, rewind, or timeframe switch
+// falls back to the full build and re-seeds the cache. (Entries are keyed by
+// the session object: a new session gets a fresh bucket via the WeakMap.)
+const sliceCache = new WeakMap<
+  ActiveSession,
+  Partial<Record<string, { lastIndex: number; last: OHLCV[] }>>
+>()
+
+function cachedBaseSlice(
+  session: ActiveSession,
+  tf: string,
+  bars: OHLCV[],
+  runUp: OHLCV[],
+  currentIndex: number
+): OHLCV[] {
+  let bucket = sliceCache.get(session)
+  if (!bucket) {
+    bucket = {}
+    sliceCache.set(session, bucket)
+  }
+  const prev = bucket[tf]
+  // Only the exact sequential advance-by-one on the same arrays can reuse the
+  // previous slice — any other access (rewind, jump, first call, timeout) falls
+  // through to a full build below.
+  if (
+    prev &&
+    prev.lastIndex === currentIndex - 1 &&
+    prev.last.length === runUp.length + currentIndex - 1
+  ) {
+    const nextBar = bars[currentIndex - 1]
+    if (nextBar) {
+      const last = prev.last.concat([nextBar])
+      bucket[tf] = { lastIndex: currentIndex, last }
+      return last
+    }
+  }
+  const tail = bars.slice(0, currentIndex)
+  const last = runUp.length === 0 ? tail : runUp.concat(tail)
+  bucket[tf] = { lastIndex: currentIndex, last }
+  return last
+}
+
 /**
  * The visible playback slice for a given chart timeframe: the day(s) of
  * run-up context followed by the session candles revealed up to `currentIndex`
@@ -101,19 +148,23 @@ export function playbackSlice(
   const tf = dukascopyTimeframe(activeVelaTf)
   const bars = ohlcvFor(session, tf)
   const runUp = runUpOhlcvFor(session, tf)
-  let tail: OHLCV[]
   if (tf === session.timeframe) {
-    tail = bars.slice(0, currentIndex)
-  } else {
-    const base = ohlcvFor(session, session.timeframe)
-    const cutoff =
-      currentIndex > 0
-        ? base[Math.min(currentIndex - 1, base.length - 1)].time
-        : Number.NEGATIVE_INFINITY
-    let first = 0
-    while (first < bars.length && bars[first].time <= cutoff) first++
-    tail = first === bars.length ? bars : bars.slice(0, first)
+    // Base timeframe (the master M1 array + its run-up prelude): sequential
+    // advances reuse the previous slice (see cachedBaseSlice); everything else
+    // rebuilds. Equivalent to `runUp ++ bars.slice(0, currentIndex)`.
+    return cachedBaseSlice(session, tf, bars, runUp, currentIndex)
   }
+  // Any other timeframe: `runUp ++ bars` whose open time is at/before the
+  // base candle currently revealed (`currentIndex - 1`), so switching timeframe
+  // mid-session still shows only what "has happened" so far.
+  const base = ohlcvFor(session, session.timeframe)
+  const cutoff =
+    currentIndex > 0
+      ? base[Math.min(currentIndex - 1, base.length - 1)].time
+      : Number.NEGATIVE_INFINITY
+  let first = 0
+  while (first < bars.length && bars[first].time <= cutoff) first++
+  const tail = first === bars.length ? bars : bars.slice(0, first)
   if (runUp.length === 0) return tail
   if (tail.length === 0) return runUp
   return runUp.concat(tail)

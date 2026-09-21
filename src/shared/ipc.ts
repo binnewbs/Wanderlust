@@ -11,6 +11,12 @@ export const IpcChannels = {
   GetCachedData: 'data:get-cached',
   /** main <- renderer: list what is currently stored in the cache (for the UI) */
   GetCacheSummary: 'data:cache-summary',
+  /** main <- renderer: cache totals + on-disk size (Settings → Storage) */
+  GetCacheStats: 'data:cache-stats',
+  /** main <- renderer: delete cached candles — all of them, or one symbol/timeframe */
+  DeleteCacheData: 'data:cache-delete',
+  /** main <- renderer: VACUUM the cache database to reclaim disk space */
+  VacuumCache: 'data:cache-vacuum',
   /** main -> renderer: progress events emitted while a download is running */
   DownloadProgress: 'data:download-progress'
 } as const
@@ -124,5 +130,57 @@ export interface CachedDataResponse {
 export interface CacheSummaryResponse {
   ok: boolean
   entries: CacheEntry[]
+  error?: string
+}
+
+/** A {@link CacheEntry} with an estimated on-disk footprint, for the storage UI. */
+export interface CacheStatsEntry extends CacheEntry {
+  /** Approximate bytes this (symbol, timeframe) group occupies (candles × row estimate) */
+  sizeBytes: number
+}
+
+/** Everything the Settings → Storage screen needs to show and explain cache usage. */
+export interface CacheStats {
+  entries: CacheStatsEntry[]
+  /** Sum of candles across every group */
+  totalCandles: number
+  /** Sum of the per-group estimates (approximate) */
+  totalEntryBytes: number
+  /** Real on-disk size of the SQLite database file */
+  dbSizeBytes: number
+  /** Real on-disk size of the write-ahead log file (0 when absent) */
+  walSizeBytes: number
+  /** Real on-disk size of the shared-memory file (0 when absent) */
+  shmSizeBytes: number
+  /** db + wal + shm — what the cache actually occupies on disk right now */
+  totalSizeBytes: number
+}
+
+export interface CacheStatsResponse {
+  ok: boolean
+  stats: CacheStats | null
+  error?: string
+}
+
+/**
+ * Deletes cached market data. Omit both fields to delete the ENTIRE cache;
+ * pass `symbol` and/or `timeframe` to narrow the delete.
+ */
+export interface DeleteCacheRequest {
+  symbol?: string
+  timeframe?: string
+}
+
+export interface DeleteCacheResult {
+  ok: boolean
+  /** Number of candle rows removed */
+  deleted: number
+  error?: string
+}
+
+export interface VacuumCacheResult {
+  ok: boolean
+  /** Total on-disk size (db + wal + shm) after vacuuming */
+  totalSizeBytes: number
   error?: string
 }

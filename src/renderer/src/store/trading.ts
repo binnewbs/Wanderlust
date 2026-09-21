@@ -257,6 +257,12 @@ export function evaluateOrders(
   const pos = new Map(next.map((o, j) => [o.id, j]))
   let bal = balance
   const closed: Order[] = []
+  // Set only when a fill or an exit actually landed on the evaluated candles.
+  // When nothing happened the ORIGINAL `orders`/`balance` come back, so their
+  // identity survives a playing tick and subscribers holding them don't
+  // re-render (and analytics memos don't re-run) on no-op frames — the whole
+  // point of a per-candle evaluate running up to 20×/s.
+  let mutated = false
   const start = Math.max(fromIndex + 1, 1)
   const end = Math.min(toIndex, candles.length)
 
@@ -302,6 +308,7 @@ export function evaluateOrders(
         size: order.previewSize ?? sizeForRisk(fillPrice, order.stopLoss, order.riskPercent, bal)
       }
       next[pos.get(order.id)!] = filled
+      mutated = true
     }
 
     // 2) Stop-loss / take-profit for filled trades (stop first).
@@ -341,8 +348,12 @@ export function evaluateOrders(
       next[pos.get(order.id)!] = done
       closed.push(done)
       bal += pnl
+      mutated = true
     }
   }
+  // Nothing actually changed on any evaluated candle → hand back the input
+  // arrays unchanged (same identity) so subscriber render loops are spared.
+  if (!mutated) return { orders, balance, closed: [] }
   return { orders: next, balance: bal, closed }
 }
 

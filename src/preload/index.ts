@@ -2,11 +2,15 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import {
   IpcChannels,
+  type CacheStatsResponse,
   type CacheSummaryResponse,
   type CachedDataResponse,
+  type DeleteCacheRequest,
+  type DeleteCacheResult,
   type DownloadProgressEvent,
   type DownloadRequest,
-  type DownloadResult
+  type DownloadResult,
+  type VacuumCacheResult
 } from '../shared/ipc'
 
 // Custom APIs for renderer
@@ -26,6 +30,16 @@ const api = {
   /** Lists every (symbol, timeframe) range stored in the cache. */
   getCacheSummary: (): Promise<CacheSummaryResponse> =>
     ipcRenderer.invoke(IpcChannels.GetCacheSummary),
+
+  /** Cache totals, per-group estimates and the database's on-disk size. */
+  getCacheStats: (): Promise<CacheStatsResponse> => ipcRenderer.invoke(IpcChannels.GetCacheStats),
+
+  /** Deletes cached candles — all of them, or only the given symbol/timeframe. */
+  deleteCacheData: (request: DeleteCacheRequest = {}): Promise<DeleteCacheResult> =>
+    ipcRenderer.invoke(IpcChannels.DeleteCacheData, request),
+
+  /** Reclaims disk space freed by deletes; resolves with the new on-disk size. */
+  vacuumCache: (): Promise<VacuumCacheResult> => ipcRenderer.invoke(IpcChannels.VacuumCache),
 
   /**
    * Subscribes to download progress events pushed from the main process.

@@ -1,16 +1,27 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import {
   IpcChannels,
+  type CacheStatsResponse,
   type CacheSummaryResponse,
   type CachedDataResponse,
+  type DeleteCacheResult,
   type DownloadBatchResult,
   type DownloadProgressEvent,
   type DownloadRequest,
   type DownloadResult,
-  type TimeframeDownloadResult
+  type TimeframeDownloadResult,
+  type VacuumCacheResult
 } from '../shared/ipc'
 import { isTimeframe } from '../shared/timeframes'
-import { countCandles, getCacheSummary, queryCandles, insertCandles } from './db'
+import {
+  countCandles,
+  deleteCandles,
+  getCacheStats,
+  getCacheSummary,
+  queryCandles,
+  insertCandles,
+  vacuumCache
+} from './db'
 import { fetchFromDukascopy } from './dukascopy'
 
 /** Validates an unknown payload from the renderer into a DownloadRequest. */
@@ -134,6 +145,9 @@ async function downloadTimeframe(
  *                            (`timeframes: [...]`, e.g. all session timeframes)
  * - `data:get-cached`        query candles already in the local cache
  * - `data:cache-summary`     what (symbol, timeframe) ranges are stored
+ * - `data:cache-stats`       cache totals + real on-disk size (Settings → Storage)
+ * - `data:cache-delete`      delete cached candles (whole cache, or one group)
+ * - `data:cache-vacuum`      VACUUM the cache database to reclaim disk space
  *
  * Progress events are pushed to the renderer over `data:download-progress`.
  */
@@ -169,6 +183,51 @@ export function registerIpcHandlers(): void {
       return {
         ok: false,
         entries: [],
+        error: err instanceof Error ? err.message : String(err)
+      }
+    }
+  })
+
+  ipcMain.handle(IpcChannels.GetCacheStats, (): CacheStatsResponse => {
+    try {
+      return { ok: true, stats: getCacheStats() }
+    } catch (err) {
+      return {
+        ok: false,
+        stats: null,
+        error: err instanceof Error ? err.message : String(err)
+      }
+    }
+  })
+
+  ipcMain.handle(IpcChannels.DeleteCacheData, (_event, request: unknown): DeleteCacheResult => {
+    try {
+      const v =
+        typeof request === 'object' && request !== null ? (request as Record<string, unknown>) : {}
+      const symbol =
+        typeof v.symbol === 'string' && v.symbol.trim() ? v.symbol.trim().toLowerCase() : undefined
+      const timeframe =
+        typeof v.timeframe === 'string' && v.timeframe.trim()
+          ? v.timeframe.trim().toLowerCase()
+          : undefined
+      return { ok: true, deleted: deleteCandles(symbol, timeframe) }
+    } catch (err) {
+      return {
+        ok: false,
+        deleted: 0,
+        error: err instanceof Error ? err.message : String(err)
+      }
+    }
+  })
+
+  ipcMain.handle(IpcChannels.VacuumCache, (): VacuumCacheResult => {
+    try {
+      const { totalSizeBytes } = vacuumCache()
+      return { ok: true, totalSizeBytes }
+    } catch (err) {
+      return {
+        ok: false,
+        totalSizeBytes: 0,
         error: err instanceof Error ? err.message : String(err)
       }
     }

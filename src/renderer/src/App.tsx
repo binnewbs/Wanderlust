@@ -1,17 +1,19 @@
 import { useEffect, useState } from 'react'
-import { Activity, ArrowLeft, BarChart3, CandlestickChart, Plus, X } from 'lucide-react'
+import { Activity, ArrowLeft, BarChart3, CandlestickChart, Plus, Settings, X } from 'lucide-react'
 import { Alert, AlertAction, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { Toaster } from '@/components/ui/sonner'
 import { useSessionStore } from '@/store/session'
+import { setChartViewVisible } from '@/components/chart/chartVisible'
 import VelaChart from '@/components/chart/VelaChart'
 import NewSessionModal from '@/components/session/NewSessionModal'
 import PlaybackPanel from '@/components/session/PlaybackPanel'
 import TradingPanel from '@/components/session/TradingPanel'
 import AnalyticsView from '@/components/analytics/AnalyticsView'
 import SessionsMenu from '@/components/session/SessionsMenu'
+import SettingsMenu from '@/components/settings/SettingsMenu'
 
 // Data-source colors use the theme's categorical chart tokens (semantic, not
 // raw palette values) so they adapt to light/dark under the b0 neutral theme.
@@ -33,6 +35,9 @@ export default function App(): React.JSX.Element {
 
   const [modalOpen, setModalOpen] = useState(false)
   const [activeView, setActiveView] = useState<'chart' | 'analytics'>('chart')
+  // Settings is a full-page menu layered over the workspace (chart stays
+  // mounted underneath, so drawings/indicators survive the round trip).
+  const [settingsOpen, setSettingsOpen] = useState(false)
   // Bumped on every open so the modal remounts with a fresh key — its form
   // state resets to defaults without a reset effect.
   const [modalNonce, setModalNonce] = useState(0)
@@ -42,6 +47,14 @@ export default function App(): React.JSX.Element {
       window.dispatchEvent(new Event('resize'))
     }
   }, [activeView, session])
+
+  // Tell the chart side whether its pane is actually on screen. While the
+  // Analytics tab is up, the chart keeps advancing (store) but Vela's repaints
+  // and the order-level overlay placement are skipped entirely — no CPU/GPU for
+  // invisible pixels, and a flush on return catches the tape up in one push.
+  useEffect(() => {
+    setChartViewVisible(activeView === 'chart')
+  }, [activeView])
 
   const openModal = (): void => {
     setModalNonce((n) => n + 1)
@@ -151,6 +164,24 @@ export default function App(): React.JSX.Element {
               New Session
             </Button>
           )}
+
+          {/* Settings manages local cache/sessions, so it only belongs on the
+              main menu — hide it (and its divider) once a session is open. */}
+          {!session && (
+            <>
+              <Separator orientation="vertical" className="h-4 shrink-0" />
+              <Button
+                variant={settingsOpen ? 'secondary' : 'ghost'}
+                size="icon-sm"
+                onClick={() => setSettingsOpen((open) => !open)}
+                title="Settings"
+                aria-label="Settings"
+                className="shrink-0 text-muted-foreground hover:text-foreground"
+              >
+                <Settings />
+              </Button>
+            </>
+          )}
         </div>
       </header>
 
@@ -215,6 +246,13 @@ export default function App(): React.JSX.Element {
             onResumeSession={handleResumeSession}
             onViewAnalytics={handleViewAnalytics}
           />
+        )}
+
+        {/* Full-page Settings menu, layered over whatever is behind it */}
+        {settingsOpen && (
+          <div className="absolute inset-0 z-30 flex flex-col bg-background animate-in fade-in duration-200">
+            <SettingsMenu onBack={() => setSettingsOpen(false)} />
+          </div>
         )}
       </main>
 
