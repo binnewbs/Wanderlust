@@ -4,6 +4,7 @@ import { Alert, AlertAction, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
+import { Toaster } from '@/components/ui/sonner'
 import { useSessionStore } from '@/store/session'
 import VelaChart from '@/components/chart/VelaChart'
 import NewSessionModal from '@/components/session/NewSessionModal'
@@ -218,6 +219,11 @@ export default function App(): React.JSX.Element {
       </main>
 
       <NewSessionModal key={modalNonce} open={modalOpen} onClose={() => setModalOpen(false)} />
+
+      {/* App-wide toast notifications (blocked SL/TP drags, etc.). Styled by
+          the b0 neutral theme tokens — no richColors, so toasts match the
+          card/popover surfaces of the rest of the UI. */}
+      <Toaster position="bottom-right" />
     </div>
   )
 }

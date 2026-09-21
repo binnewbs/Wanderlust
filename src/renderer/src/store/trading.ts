@@ -37,6 +37,11 @@ export interface Order {
   takeProfit: number
   /** % of the account balance risked at fill. */
   riskPercent: number
+  /** Dollar amount risked at submission — |entry − initial SL| × the captured
+   *  size. Immutable snapshot of what the trade was OPENED for; the R-multiple
+   *  base for analytics. Dragging SL/TP afterwards must not change what a
+   *  trade's R is measured against. Missing on legacy saves only. */
+  initialRisk?: number
   /** Position size in units, fixed at submission from the then-current balance
    *  and the entry/SL levels (limit/stop fill exactly at `orderPrice`, market at
    *  the projected latest close). This is the ACTUAL size a pending order fills
@@ -98,6 +103,35 @@ let orderSeq = 0
 export function nextOrderId(): string {
   orderSeq += 1
   return `order-${Date.now().toString(36)}-${orderSeq}`
+}
+
+/**
+ * Whether an SL/TP level may be dragged to `price` for `order`.
+ *
+ * A level must never sit on the far side of what it can instantly fill
+ * against — an already-crossed level exits the position on the very next
+ * candle (which is what makes a long's TP dragged below the current price
+ * "automatically stop" the order):
+ *  - FILLED positions anchor on the live market (latest revealed close): for a
+ *    long, SL must stay strictly below the market and TP strictly above (short
+ *    mirrored). Trailing the SL up to just under the market, or tightening the
+ *    TP down to just above it, is still allowed.
+ *  - PENDING orders anchor on the projected entry (`fillPrice ?? orderPrice`),
+ *    so their levels bracket the entry and can't stop the order the moment it
+ *    fills. Setups between market and entry remain free.
+ * Returns true when the anchor is unknown so the write can go through.
+ */
+export function canRepriceLevel(
+  order: Pick<Order, 'status' | 'direction' | 'fillPrice' | 'orderPrice'>,
+  level: OrderLevel,
+  price: number,
+  market?: number
+): boolean {
+  const anchor = order.status === 'filled' ? market : (order.fillPrice ?? order.orderPrice)
+  if (typeof anchor !== 'number' || !Number.isFinite(anchor) || anchor <= 0) return true
+  const long = order.direction === 'long'
+  if (long) return level === 'stopLoss' ? price < anchor : price > anchor
+  return level === 'stopLoss' ? price > anchor : price < anchor
 }
 
 export interface EvalResult {

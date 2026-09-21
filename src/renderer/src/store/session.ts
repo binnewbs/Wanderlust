@@ -10,6 +10,7 @@ import {
 } from '@shared/timeframes'
 import { isTradingDay } from '@shared/trading'
 import {
+  canRepriceLevel,
   evaluateOrders,
   hasOpenPosition,
   nextOrderId,
@@ -33,6 +34,11 @@ import {
  */
 
 export type SessionStatus = 'idle' | 'downloading' | 'ready' | 'error'
+
+/** What a `updateOrderLevel` drag write did: the level moved ('applied'), the
+ *  drag was refused by `canRepriceLevel` ('rejected'), or nothing needed to
+ *  happen ('noop' — closed/unknown order, identical price, non-finite input). */
+export type LevelRepriceResult = 'applied' | 'rejected' | 'noop'
 
 export interface NewSessionInput {
   name?: string
@@ -129,8 +135,9 @@ export interface SessionState {
   /** Submit a New Order; it fills/evals from the CURRENT playback candle on. */
   submitOrder: (input: NewOrderInput) => void
   /** Live-drag a pending/filled order's SL or TP level (OrderLevelsOverlay).
-   *  Closed orders are read-only; the write is a pure guarded map. */
-  updateOrderLevel: (orderId: string, level: OrderLevel, price: number) => void
+   *  Closed orders are read-only; the write is a pure guarded map. Returns
+   *  what happened so the chart can toast the drag it refused. */
+  updateOrderLevel: (orderId: string, level: OrderLevel, price: number) => LevelRepriceResult
   /** Cancel a pending order, or close a filled position at the latest market close. */
   closeOrder: (orderId: string) => void
   /** Close EVERY open position at the latest market close in one shot — the
@@ -176,6 +183,18 @@ export function sessionBaseCandles(session: ActiveSession | null): Candle[] {
 export function sessionBaseRunUp(session: ActiveSession | null): Candle[] {
   if (!session) return []
   return session.runUpByTimeframe[session.timeframe] ?? []
+}
+
+/** Latest revealed market close — the last revealed base candle's close, or the
+ *  run-up's last candle at index 0. What the chart's right edge points at now. */
+export function latestRevealedClose(
+  session: ActiveSession | null,
+  currentIndex: number
+): number | undefined {
+  const base = sessionBaseCandles(session)
+  if (currentIndex > 0) return base[currentIndex - 1]?.close
+  const runUp = sessionBaseRunUp(session)
+  return runUp.length > 0 ? runUp[runUp.length - 1]?.close : undefined
 }
 
 /** Timestamp of the LAST revealed candle (run-up included): at index 0 the
@@ -587,14 +606,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // A market order does not execute at the position tool's projected entry:
     // it fills on the next candle. Until that fill arrives, anchor its pending
     // entry display/risk preview to the latest known market close instead.
-    const base = sessionBaseCandles(s.session)
-    const runUp = sessionBaseRunUp(s.session)
-    const latestClose =
-      s.currentIndex > 0
-        ? base[s.currentIndex - 1]?.close
-        : runUp.length > 0
-          ? runUp[runUp.length - 1]?.close
-          : undefined
+    const latestClose = latestRevealedClose(s.session, s.currentIndex)
 
     // Level sanity, per direction. Market orders fill at the next candle's open
     // (entry price unknown ahead of time) — only the SL/TP pair must bracket a
@@ -667,6 +679,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       input.orderType === 'market' && latestClose !== undefined && Number.isFinite(latestClose)
         ? latestClose
         : input.orderPrice
+    const previewSize = sizeForRisk(orderPrice, input.stopLoss, input.riskPercent, s.balance)
     const order: Order = {
       id: nextOrderId(),
       drawingId: input.drawingId,
@@ -677,7 +690,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       stopLoss: input.stopLoss,
       takeProfit: input.takeProfit,
       riskPercent: input.riskPercent,
-      previewSize: sizeForRisk(orderPrice, input.stopLoss, input.riskPercent, s.balance),
+      previewSize,
+      // Snapshot of the dollars risked at submission — the R-multiple base for
+      // analytics. Sliding SL/TP after submission changes the trade's PnL but
+      // must not change what its R is measured against.
+      initialRisk: Math.abs(orderPrice - input.stopLoss) * previewSize,
       submissionIndex: s.currentIndex,
       status: 'pending'
     }
@@ -692,18 +709,34 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setRiskPercent: (pct) => set({ riskPercent: Math.min(100, Math.max(0, pct)) }),
   /** Reprice an order's stop-loss/take-profit by live drag on the chart's
    *  horizontal level strips (Phase 6 — OrderLevelsOverlay). Pending/running
-   *  orders reprice; closed orders are read-only. Pure map; never throws. */
-  updateOrderLevel: (orderId, level, price) =>
-    set((s) => {
-      if (!Number.isFinite(price) || price <= 0) return s
-      const next = s.orders.map((o) => {
-        if (o.id !== orderId || o.status === 'closed') return o
-        if (level === 'stopLoss' && o.stopLoss === price) return o
-        if (level === 'takeProfit' && o.takeProfit === price) return o
-        return level === 'stopLoss' ? { ...o, stopLoss: price } : { ...o, takeProfit: price }
-      })
-      return { orders: next }
-    }),
+   *  orders reprice; closed orders are read-only. A dragged level that would
+   *  cross the market (filled) or the projected entry (pending) is refused —
+   *  otherwise the next candle exits the position there instantly ("drag the TP
+   *  below the price and the order auto-stops"). Pure map; never throws. */
+  updateOrderLevel: (orderId, level, price) => {
+    if (!Number.isFinite(price) || price <= 0) return 'noop'
+    const s = get()
+    const market = latestRevealedClose(s.session, s.currentIndex)
+    const target = s.orders.find((o) => o.id === orderId && o.status !== 'closed')
+    if (!target) return 'noop'
+    if (
+      (level === 'stopLoss' && target.stopLoss === price) ||
+      (level === 'takeProfit' && target.takeProfit === price)
+    ) {
+      return 'noop'
+    }
+    if (!canRepriceLevel(target, level, price, market)) return 'rejected'
+    set({
+      orders: s.orders.map((o) =>
+        o.id === orderId && o.status !== 'closed' && o[level] !== price
+          ? level === 'stopLoss'
+            ? { ...o, stopLoss: price }
+            : { ...o, takeProfit: price }
+          : o
+      )
+    })
+    return 'applied'
+  },
 
   closeOrder: (orderId) =>
     set((s) => {

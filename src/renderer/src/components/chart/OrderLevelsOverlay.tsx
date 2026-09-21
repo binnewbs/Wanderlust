@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react'
+import { toast } from 'sonner'
 import { sessionBaseCandles, sessionBaseRunUp, useSessionStore } from '@/store/session'
 import type { Order } from '@/store/trading'
 import {
@@ -67,6 +68,19 @@ interface StripSpec {
 /** Half the strip hit-area height (px). The visible line sits in the middle. */
 const STRIP_HALF = 6
 
+/** Toast copy for a drag refused by `canRepriceLevel` (the store keeps the
+ *  previous level): a long's SL must stay below the anchor and TP above it
+ *  (short mirrored), where the anchor is the live market for a running
+ *  position — "the current price" — and the projected entry for a pending
+ *  order. */
+function dragBlockedMessage(order: Order, level: 'stopLoss' | 'takeProfit'): string {
+  const anchor = order.status === 'filled' ? 'current price' : 'entry price'
+  const isLong = order.direction === 'long'
+  const levelName = level === 'stopLoss' ? 'Stop-loss' : 'Take-profit'
+  const relation = level === 'stopLoss' ? (isLong ? 'above' : 'below') : isLong ? 'below' : 'above'
+  return `${levelName} can't be dragged ${relation} the ${anchor}.`
+}
+
 /** Small tail-safe price formatter (forex 5dp, indices 2dp, trimmed zeros). */
 function formatPrice(p: number): string {
   const s = p.toFixed(5)
@@ -107,6 +121,11 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
     canvasTop: number
   } | null>(null)
   const dragRef = useRef<{ orderId: string; level: 'stopLoss' | 'takeProfit' } | null>(null)
+
+  // One warning toast per LEVEL-crossing, not per pointermove: a refused drag
+  // fires here on every move until the user pulls back inside the valid band,
+  // so remember we already warned (reset once the level applies again).
+  const warnedRef = useRef(new Set<string>())
 
   // Build the strip list from the CURRENT orders and mirror it into a ref the
   // rAF loop can read without re-subscribing to every pointer move. Memoizing
@@ -465,7 +484,19 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
         // Follow the pointer instantly, then let the store round-trip confirm.
         const el = stripEls.current.get(spec.key)
         if (el) el.style.transform = `translateY(${ctx.canvasTop + y - STRIP_HALF}px)`
-        useSessionStore.getState().updateOrderLevel(spec.orderId, spec.level, price)
+        const result = useSessionStore.getState().updateOrderLevel(spec.orderId, spec.level, price)
+        const warnKey = `${spec.orderId}:${spec.level}`
+        if (result === 'applied') {
+          warnedRef.current.delete(warnKey)
+        } else if (result === 'rejected' && !warnedRef.current.has(warnKey)) {
+          // The strip snaps back by itself on the next placement frame; let the
+          // user know WHY it won't go there, once per crossing.
+          warnedRef.current.add(warnKey)
+          const order = orders.find((o) => o.id === spec.orderId)
+          if (order) {
+            toast.warning('Level not moved', { description: dragBlockedMessage(order, spec.level) })
+          }
+        }
       }
     } catch {
       // ignore: keep the level where it was

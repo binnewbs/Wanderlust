@@ -148,12 +148,16 @@ export default function TradeJournal({ orders }: TradeJournalProps): React.JSX.E
                   const outcome = isWin ? 'WIN' : isLoss ? 'LOSS' : 'BREAKEVEN'
                   const outcomeVariant = isWin ? 'secondary' : isLoss ? 'destructive' : 'outline'
 
-                  // Compute realized RR
-                  const riskDist = Math.abs((t.fillPrice ?? t.orderPrice) - t.stopLoss)
-                  const rewardDist = Math.abs(
-                    (t.exitPrice ?? t.orderPrice) - (t.fillPrice ?? t.orderPrice)
-                  )
-                  const realizedRr = riskDist > 0 ? rewardDist / riskDist : 0
+                  // Compute realized RR: actual PnL ÷ the dollars risked at
+                  // submission (initial |entry − SL| × captured size). Money-
+                  // based against the risk the trade was OPENED for, so trailing
+                  // the SL tight can't inflate wins, breakevens show ~0R, and a
+                  // loss on a dragged-out SL reports its true multiple. Legacy
+                  // orders without `initialRisk` fall back to the current SL.
+                  const initialRisk =
+                    t.initialRisk ??
+                    Math.abs((t.fillPrice ?? t.orderPrice) - t.stopLoss) * (t.size ?? 0)
+                  const realizedRr = initialRisk > 0 ? (t.pnl ?? 0) / initialRisk : 0
 
                   const holdingMs =
                     t.filledAtTime && t.closedAtTime && t.closedAtTime >= t.filledAtTime
@@ -225,7 +229,7 @@ export default function TradeJournal({ orders }: TradeJournalProps): React.JSX.E
                         {formatCurrency(pnl)}
                       </TableCell>
                       <TableCell className="text-right font-mono text-xs text-muted-foreground">
-                        {isLoss ? '−1.00R' : `${formatRatio(realizedRr)}R`}
+                        {initialRisk > 0 ? `${formatRatio(realizedRr)}R` : '—'}
                       </TableCell>
                     </TableRow>
                   )
