@@ -155,6 +155,11 @@ function Calendar({
   return (
     <DayPicker
       showOutsideDays={showOutsideDays}
+      // Session dates are `YYYY-MM-DD` (UTC) end-to-end, so the calendar must
+      // pick in UTC too: a day clicked at local midnight would otherwise
+      // become the previous day for timezones east of UTC once its UTC parts
+      // are read back (day-cell ↔ string round-trip misalignment).
+      timeZone="UTC"
       className={cn(
         'group/calendar bg-background p-2 [--cell-radius:var(--radius-md)] [--cell-size:--spacing(7)] in-data-[slot=card-content]:bg-transparent in-data-[slot=popover-content]:bg-transparent',
         String.raw`rtl:**:[.rdp-button\_next>svg]:rotate-180`,
@@ -287,7 +292,7 @@ function CalendarDayButton({
       ref={ref}
       variant="ghost"
       size="icon"
-      data-day={day.date.toLocaleDateString(locale?.code)}
+      data-day={day.date.toLocaleDateString(locale?.code, { timeZone: 'UTC' })}
       data-selected-single={
         modifiers.selected &&
         !modifiers.range_start &&

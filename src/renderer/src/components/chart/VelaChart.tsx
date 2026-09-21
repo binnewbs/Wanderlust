@@ -2,9 +2,10 @@ import { useEffect, useRef } from 'react'
 import { VelaWorkspace, type VelaWorkspaceOptions } from '@luxalgo/vela/workspace'
 import type { SerializedDrawing, VisibleRange } from '@luxalgo/vela'
 import type { Timeframe } from '@shared/timeframes'
-import { useSessionStore } from '@/store/session'
+import { indexAtOrAfter, sessionBaseCandles, useSessionStore } from '@/store/session'
 import type { PositionSelection } from '@/store/trading'
 import {
+  PLAYBACK_WINDOW_BARS,
   SESSION_PROVIDER,
   createSessionDataProvider,
   playbackSlice,
@@ -353,6 +354,32 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
     const unsubIndex = useSessionStore.subscribe((state, prev) => {
       if (state.currentIndex !== prev.currentIndex) requestSlice()
     })
+    // Go To → Custom Date → "Just view the chart": a transient PAN request.
+    // currentIndex (and therefore the data slice) is NOT touched — no re-slice,
+    // so Vela keeps every drawing (position tools, trend lines, …) exactly in
+    // place. Anchor the viewport's right edge at the requested timestamp while
+    // keeping the user's current zoom span (falling back to the standard
+    // playback window). The chart always has the target bars loaded already —
+    // the destination is behind the revealed edge by construction.
+    const unsubViewRequest = useSessionStore.subscribe((state, prev) => {
+      const req = state.viewRequest
+      if (!req || req === prev.viewRequest) return
+      const session = state.session
+      const base = session ? sessionBaseCandles(session) : []
+      if (base.length === 0) {
+        state.clearViewRequest()
+        return
+      }
+      const idx = Math.min(indexAtOrAfter(base, req.ts), base.length - 1)
+      const bar = base[idx]
+      const activeTf = chart.market.timeframe ?? velaTimeframe(timeframe)
+      const barMs = timeframeMs(activeTf)
+      const cur = chart.getVisibleRange()
+      const span = cur && cur.to > cur.from ? cur.to - cur.from : PLAYBACK_WINDOW_BARS * barMs
+      const to = bar.timestamp + barMs * FOLLOW_RIGHT_OFFSET
+      void chart.setVisibleRange({ from: to - span, to })
+      state.clearViewRequest()
+    })
     // The pane became visible again after playback ran hidden: flush the latest
     // reveal immediately (the keyed guard would otherwise no-op forever, since
     // the index already moved and no new store event is coming).
@@ -466,6 +493,7 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
       unsubEdited()
       unsubRemoved()
       unsubIndex()
+      unsubViewRequest()
       unsubVisible()
       unsubMarket()
       if (rafPending) cancelAnimationFrame(rafId)

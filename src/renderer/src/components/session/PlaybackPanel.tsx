@@ -213,6 +213,8 @@ export default function PlaybackPanel(): React.JSX.Element {
   const skipToStart = useSessionStore((s) => s.skipToStart)
   const skipToEnd = useSessionStore((s) => s.skipToEnd)
   const goToTimestamp = useSessionStore((s) => s.goToTimestamp)
+  const requestViewAt = useSessionStore((s) => s.requestViewAt)
+  const rewindToTimestamp = useSessionStore((s) => s.rewindToTimestamp)
   const setSpeed = useSessionStore((s) => s.setSpeed)
   const playbackTimeframe = useSessionStore((s) => s.playbackTimeframe)
   const flattenPositions = useSessionStore((s) => s.flattenPositions)
@@ -221,6 +223,12 @@ export default function PlaybackPanel(): React.JSX.Element {
   const [gotoDate, setGotoDate] = useState('')
   const [gotoMenuOpen, setGotoMenuOpen] = useState(false)
   const [calendarOpen, setCalendarOpen] = useState(false)
+
+  // Custom Date landing BEHIND the clock is a backward move — ask first whether
+  // the jump should just view that date's chart without touching the account,
+  // or fully rewind (erasing the positions and PnL taken since then).
+  const [gotoChoiceOpen, setGotoChoiceOpen] = useState(false)
+  const [pendingGoto, setPendingGoto] = useState<{ ts: number } | null>(null)
 
   // Go-back flow dialogs. Every backward move funnels through `attemptBackward`:
   //  - while a position is OPEN a dialog offers Close Now / Nevermind (closing
@@ -350,6 +358,30 @@ export default function PlaybackPanel(): React.JSX.Element {
     setWarnDialogOpen(false)
   }
 
+  // Custom-date backward jump: run the chosen mode ("just view" pans the chart
+  // without touching the account; "rewind & reset" erases positions/PnL).
+  const confirmGotoViewOnly = (): void => {
+    const pending = pendingGoto
+    setPendingGoto(null)
+    setGotoChoiceOpen(false)
+    if (pending) {
+      // Peek only: pause the tape and pan the chart view to the date — the
+      // playback clock, positions, PnL and every chart drawing stay put.
+      useSessionStore.getState().pause()
+      requestViewAt(pending.ts)
+    }
+  }
+  const confirmGotoRewind = (): void => {
+    const pending = pendingGoto
+    setPendingGoto(null)
+    setGotoChoiceOpen(false)
+    if (pending) rewindToTimestamp(pending.ts)
+  }
+  const cancelGotoChoice = (): void => {
+    setPendingGoto(null)
+    setGotoChoiceOpen(false)
+  }
+
   const goTo = (): void => {
     if (!gotoDate) return
     const [y, m, d] = gotoDate.split('-').map(Number)
@@ -358,10 +390,12 @@ export default function PlaybackPanel(): React.JSX.Element {
     const ts = Date.UTC(y, m - 1, d)
     const st = useSessionStore.getState()
     const target = indexAtOrAfter(sessionBaseCandles(st.session), ts)
-    // A custom-date jump behind the clock is a backward move: go through the
-    // guard dialogs so an open position can't silently be rewound.
+    // A custom-date jump behind the clock is a backward move: ask whether the
+    // jump should just view that date's chart (account untouched) or fully
+    // rewind and erase the positions and PnL taken since then.
     if (target < st.currentIndex) {
-      attemptBackward(() => goToTimestamp(ts), target)
+      setPendingGoto({ ts })
+      setGotoChoiceOpen(true)
     } else {
       goToTimestamp(ts)
     }
@@ -689,6 +723,42 @@ export default function PlaybackPanel(): React.JSX.Element {
               </Button>
               <Button onClick={confirmWarnRewind} data-testid="rewind-confirm">
                 Go Back
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Go To → Custom Date landed behind the clock: view-only peek or rewind? */}
+      {gotoChoiceOpen && pendingGoto !== null && (
+        <Dialog
+          open
+          onOpenChange={(next) => {
+            if (!next) cancelGotoChoice()
+          }}
+        >
+          <DialogContent showCloseButton={false} className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Go back to {formatDateUtc(new Date(pendingGoto.ts))}?</DialogTitle>
+              <DialogDescription>
+                That date is behind your current playback position. You can pan the chart there to
+                look around — your positions, PnL and playback clock stay untouched — or rewind the
+                simulation and erase any positions and PnL taken since then.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={cancelGotoChoice} data-testid="goto-stay">
+                Stay here
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={confirmGotoViewOnly}
+                data-testid="goto-view-only"
+              >
+                Just view the chart
+              </Button>
+              <Button onClick={confirmGotoRewind} data-testid="goto-rewind-reset">
+                Rewind &amp; reset
               </Button>
             </DialogFooter>
           </DialogContent>

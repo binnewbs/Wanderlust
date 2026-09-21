@@ -114,6 +114,19 @@ export interface SessionState {
   skipToEnd: () => void
   /** Jump to the first candle that opens at or after `timestamp` (Go To) */
   goToTimestamp: (timestamp: number) => void
+  /** Transient "pan the chart view to this timestamp" request (Go To → Custom
+   *  Date → "Just view the chart"). VelaChart consumes it and clears it back
+   *  to null — the playback position, orders and balance are NOT touched, so
+   *  no data re-slice happens and Vela keeps every drawing. Seq makes repeated
+   *  requests to the same timestamp observable. */
+  viewRequest: { ts: number; seq: number } | null
+  requestViewAt: (timestamp: number) => void
+  clearViewRequest: () => void
+  /** Full rewind to `timestamp`: restore the account to its state at that
+   *  point, erasing the positions (and PnL) taken since then (Go To → Custom
+   *  Date → "Rewind & reset"). Unlike `goToTimestamp` this does NOT refuse to
+   *  move while a position is open — the rewind wipes it. */
+  rewindToTimestamp: (timestamp: number) => void
   setSpeed: (speed: number) => void
 
   // --- simulated account + orders (Phase 5) ---
@@ -596,6 +609,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       )
       return { playing: false, currentIndex: nextIndex, orders: ev.orders, balance: ev.balance }
     }),
+  // View-only "Just view" command: the chart pans its viewport to the target
+  // date WITHOUT touching currentIndex/orders/balance — no re-slice, so every
+  // Vela drawing (position tools, trend lines, …) survives. VelaChart consumes
+  // the request and clears it back to null.
+  viewRequest: null,
+  requestViewAt: (ts) => set((s) => ({ viewRequest: { ts, seq: (s.viewRequest?.seq ?? 0) + 1 } })),
+  clearViewRequest: () => set({ viewRequest: null }),
+  // Explicit full rewind for the Custom Date "Rewind & reset" choice: the user
+  // has already confirmed wiping the period, so no open-position gate applies
+  // — restoreOrdersAt drops anything filled/closed at or after the target.
+  rewindToTimestamp: (ts) =>
+    set((s) => {
+      const nextIndex = indexAtOrAfter(sessionBaseCandles(s.session), ts)
+      const rewound = restoreOrdersAt(s.orders, s.startBalance, nextIndex)
+      return {
+        playing: false,
+        currentIndex: nextIndex,
+        orders: rewound.orders,
+        balance: rewound.balance
+      }
+    }),
   setSpeed: (speed) => set((s) => (s.speed === speed ? s : { speed })),
 
   // --- simulated account + orders (Phase 5) ---
@@ -889,7 +923,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       orders: [],
       rewindWarningDismissed: false,
       selectedDrawing: null,
-      lastOrderResult: null
+      lastOrderResult: null,
+      viewRequest: null
     })
 
     try {
@@ -961,7 +996,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         playbackTimeframe: target.playbackTimeframe,
         playing: false,
         selectedDrawing: null,
-        lastOrderResult: null
+        lastOrderResult: null,
+        viewRequest: null
       })
       return
     }
@@ -1067,7 +1103,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         playbackTimeframe: target.playbackTimeframe,
         playing: false,
         selectedDrawing: null,
-        lastOrderResult: null
+        lastOrderResult: null,
+        viewRequest: null
       })
     } catch (err) {
       set({ status: 'error', error: err instanceof Error ? err.message : String(err) })
@@ -1157,10 +1194,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         playing: false,
         session: null,
         savedSessions: updated,
-        selectedDrawing: null
+        selectedDrawing: null,
+        viewRequest: null
       })
     } else {
-      set({ playing: false, session: null })
+      set({ playing: false, session: null, viewRequest: null })
     }
   },
 

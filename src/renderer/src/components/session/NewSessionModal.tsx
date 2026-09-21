@@ -21,7 +21,7 @@ import {
   InputGroupInput
 } from '@/components/ui/input-group'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { formatDateUtc, parseDateUtc } from '@/lib/dates'
+import { daysAgoUtc, formatDateUtc, parseDateUtc, sanitizeDateInput, todayUtc } from '@/lib/dates'
 import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
@@ -73,8 +73,12 @@ export default function NewSessionModal({
   const [sessionName, setSessionName] = useState('EUR/USD M1 Replay')
   const [assetId, setAssetId] = useState('eurusd')
   const [timeframe, setTimeframe] = useState<Timeframe>('m1')
-  const [startDate, setStartDate] = useState('2024-01-02')
-  const [endDate, setEndDate] = useState('2024-01-31')
+  // Default range: the trailing 30 calendar days ending today (UTC). Both ends
+  // are capped at "today" — there is no data past the present to download.
+  const today = todayUtc()
+  const maxDay = parseDateUtc(today)
+  const [startDate, setStartDate] = useState(daysAgoUtc(30))
+  const [endDate, setEndDate] = useState(today)
   const [balanceStr, setBalanceStr] = useState('100000')
   // Popover visibility per date field — closed once a day is picked.
   const [fromOpen, setFromOpen] = useState(false)
@@ -89,15 +93,18 @@ export default function NewSessionModal({
   const valid = useMemo(() => {
     const s = Date.parse(`${startDate}T00:00:00Z`)
     const e = Date.parse(`${endDate}T00:00:00Z`)
+    const cap = maxDay ? maxDay.getTime() : Number.POSITIVE_INFINITY
     return (
       sessionName.trim().length > 0 &&
       !!asset &&
       Number.isFinite(s) &&
       Number.isFinite(e) &&
       e >= s &&
+      s <= cap &&
+      e <= cap &&
       balance > 0
     )
-  }, [sessionName, asset, startDate, endDate, balance])
+  }, [sessionName, asset, startDate, endDate, balance, maxDay])
 
   const handleStart = async (): Promise<void> => {
     if (!valid || !asset) return
@@ -270,7 +277,7 @@ export default function NewSessionModal({
                       <InputGroupInput
                         id="ns-date-from"
                         value={startDate}
-                        onChange={(e) => setStartDate(e.target.value)}
+                        onChange={(e) => setStartDate(sanitizeDateInput(e.target.value, today))}
                         placeholder="YYYY-MM-DD"
                         maxLength={10}
                       />
@@ -291,9 +298,12 @@ export default function NewSessionModal({
                         mode="single"
                         captionLayout="dropdown"
                         startMonth={new Date(2015, 0, 1)}
-                        endMonth={new Date(new Date().getFullYear() + 1, 11, 31)}
+                        endMonth={maxDay}
                         selected={parseDateUtc(startDate)}
                         defaultMonth={parseDateUtc(startDate) ?? new Date()}
+                        // Nothing past UTC today is selectable — there is no
+                        // data beyond the present to download.
+                        disabled={(day) => (maxDay ? day.getTime() > maxDay.getTime() : false)}
                         onSelect={(day) => {
                           const next = formatDateUtc(day)
                           if (next) setStartDate(next)
@@ -310,7 +320,7 @@ export default function NewSessionModal({
                       <InputGroupInput
                         id="ns-date-to"
                         value={endDate}
-                        onChange={(e) => setEndDate(e.target.value)}
+                        onChange={(e) => setEndDate(sanitizeDateInput(e.target.value, today))}
                         placeholder="YYYY-MM-DD"
                         maxLength={10}
                       />
@@ -331,11 +341,12 @@ export default function NewSessionModal({
                         mode="single"
                         captionLayout="dropdown"
                         startMonth={new Date(2015, 0, 1)}
-                        endMonth={new Date(new Date().getFullYear() + 1, 11, 31)}
+                        endMonth={maxDay}
                         selected={parseDateUtc(endDate)}
                         defaultMonth={
                           parseDateUtc(endDate) ?? parseDateUtc(startDate) ?? new Date()
                         }
+                        disabled={(day) => (maxDay ? day.getTime() > maxDay.getTime() : false)}
                         onSelect={(day) => {
                           const next = formatDateUtc(day)
                           if (next) setEndDate(next)

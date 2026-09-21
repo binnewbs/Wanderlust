@@ -1,6 +1,6 @@
 {
   "name": "wanderlust",
-  "version": "1.0.0",
+  "version": "1.0.5",
   "productName": "Wanderlust",
   "description": "Local, fully offline desktop backtesting application for trading (FX Replay-style).",
   "main": "./out/main/index.js",
