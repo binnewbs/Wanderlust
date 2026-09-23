@@ -196,7 +196,7 @@ export default function DeepInsights({ kpis, dayStats }: DeepInsightsProps): Rea
               </span>
             </div>
             <p className="text-[11px] text-muted-foreground">
-              Trades closed within spread/breakeven threshold ($0.00).
+              Trades closed within ±0.05% of the balance at the time of the close.
             </p>
           </CardContent>
         </Card>

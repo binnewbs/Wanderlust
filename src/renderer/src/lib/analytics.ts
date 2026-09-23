@@ -70,7 +70,21 @@ export interface CalendarDayStat {
   winRate: number
 }
 
+/**
+ * Sign-display epsilon for formatted currency (pure formatting — unrelated to
+ * the win/loss/breakeven CLASSIFICATION, which uses `breakevenThreshold`).
+ */
 const BREAKEVEN_THRESHOLD = 0.001
+
+/**
+ * Breakeven band for a closed trade: ±0.05% of the account balance it closed
+ * against. A trade is "breakeven" when |pnl| ≤ band, a win above +band, a
+ * loss below −band. A non-positive balance clamps the band to 0 (exact-zero
+ * classification) rather than ever reclassifying on a nonsense reference.
+ */
+export function breakevenThreshold(balance: number): number {
+  return Math.max(balance, 0) * 0.0005
+}
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 const SHORT_DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -86,6 +100,40 @@ export function getClosedTrades(orders: Order[]): Order[] {
       const timeB = b.closedAtTime ?? (b.closedAtIndex !== undefined ? b.closedAtIndex * 60000 : 0)
       return timeA - timeB
     })
+}
+
+/**
+ * Closed trades in chronological exit order, each tagged with the simulated
+ * account balance at the moment it closed — BEFORE its own PnL was applied:
+ * `startBalance` plus the realized PnL of every trade closed before it. The
+ * account only ever moves by realized PnL, so this matches the live engine
+ * (`evaluateOrders` accumulates `bal += pnl` per close in the same order) and
+ * `restoreOrdersAt` exactly, including same-candle closes and rewinds.
+ */
+export function closedTradesWithCloseBalance(
+  startBalance: number,
+  orders: Order[]
+): Array<{ trade: Order; pnl: number; balanceAtClose: number }> {
+  const closed = getClosedTrades(orders)
+  let balance = startBalance
+  const out: Array<{ trade: Order; pnl: number; balanceAtClose: number }> = []
+  for (const trade of closed) {
+    const pnl = trade.pnl ?? 0
+    out.push({ trade, pnl, balanceAtClose: balance })
+    balance += pnl
+  }
+  return out
+}
+
+/** Map of order id → the account balance when that closed trade was closed
+ *  (see {@link closedTradesWithCloseBalance}). Trade ids absent from the map
+ *  (never closed) fall back to the caller's own reference balance. */
+export function closeBalancesById(startBalance: number, orders: Order[]): Map<string, number> {
+  const map = new Map<string, number>()
+  for (const { trade, balanceAtClose } of closedTradesWithCloseBalance(startBalance, orders)) {
+    map.set(trade.id, balanceAtClose)
+  }
+  return map
 }
 
 /**
@@ -148,11 +196,15 @@ export function calculateKpiMetrics(startBalance: number, orders: Order[]): KpiM
   let curLossStreak = 0
   let lastOutcome: 'win' | 'loss' | 'breakeven' = 'breakeven'
 
-  for (const trade of closed) {
-    const pnl = trade.pnl ?? 0
+  // Each trade's win/loss/breakeven band is ±0.05% of the balance at ITS close
+  // (`closedTradesWithCloseBalance` tags the pre-close balance), so a small
+  // result on a large account is a breakeven while the same dollars on a small
+  // account is a real win/loss.
+  for (const { trade, pnl, balanceAtClose } of closedTradesWithCloseBalance(startBalance, orders)) {
+    const band = breakevenThreshold(balanceAtClose)
     netProfit += pnl
 
-    if (pnl > BREAKEVEN_THRESHOLD) {
+    if (pnl > band) {
       winningTrades += 1
       grossProfit += pnl
       bestWin = Math.max(bestWin, pnl)
@@ -161,7 +213,7 @@ export function calculateKpiMetrics(startBalance: number, orders: Order[]): KpiM
       curLossStreak = 0
       maxConsecutiveWins = Math.max(maxConsecutiveWins, curWinStreak)
       lastOutcome = 'win'
-    } else if (pnl < -BREAKEVEN_THRESHOLD) {
+    } else if (pnl < -band) {
       losingTrades += 1
       const absLoss = Math.abs(pnl)
       grossLoss += absLoss
@@ -238,7 +290,7 @@ export function calculateKpiMetrics(startBalance: number, orders: Order[]): KpiM
   }
 
   // Day of week analysis
-  const dayStats = calculateDayOfWeekStats(orders)
+  const dayStats = calculateDayOfWeekStats(startBalance, orders)
   let mostGainDay: { day: string; gain: number } | null = null
   let maxGain = Number.NEGATIVE_INFINITY
 
@@ -338,7 +390,8 @@ export function buildEquityCurve(startBalance: number, orders: Order[]): EquityP
 /**
  * Computes performance grouped by Day of the Week (Monday - Friday).
  */
-export function calculateDayOfWeekStats(orders: Order[]): DayOfWeekStat[] {
+export function calculateDayOfWeekStats(startBalance: number, orders: Order[]): DayOfWeekStat[] {
+  const balances = closeBalancesById(startBalance, orders)
   const closed = getClosedTrades(orders)
 
   // Map for days 1..5 (Mon..Fri) plus 0 and 6 if trades happened on weekend
@@ -363,9 +416,10 @@ export function calculateDayOfWeekStats(orders: Order[]): DayOfWeekStat[] {
     const pnl = trade.pnl ?? 0
     map[day].pnl += pnl
     map[day].count += 1
-    if (pnl > BREAKEVEN_THRESHOLD) {
+    const band = breakevenThreshold(balances.get(trade.id) ?? startBalance)
+    if (pnl > band) {
       map[day].wins += 1
-    } else if (pnl < -BREAKEVEN_THRESHOLD) {
+    } else if (pnl < -band) {
       map[day].losses += 1
     }
   }
@@ -390,7 +444,11 @@ export function calculateDayOfWeekStats(orders: Order[]): DayOfWeekStat[] {
 /**
  * Aggregates closed trades by calendar date (YYYY-MM-DD).
  */
-export function calculateCalendarPnl(orders: Order[]): Map<string, CalendarDayStat> {
+export function calculateCalendarPnl(
+  startBalance: number,
+  orders: Order[]
+): Map<string, CalendarDayStat> {
+  const balances = closeBalancesById(startBalance, orders)
   const closed = getClosedTrades(orders)
   const map = new Map<string, CalendarDayStat>()
 
@@ -416,9 +474,10 @@ export function calculateCalendarPnl(orders: Order[]): Map<string, CalendarDaySt
     const pnl = trade.pnl ?? 0
     existing.netPnl += pnl
     existing.tradeCount += 1
-    if (pnl > BREAKEVEN_THRESHOLD) {
+    const band = breakevenThreshold(balances.get(trade.id) ?? startBalance)
+    if (pnl > band) {
       existing.wins += 1
-    } else if (pnl < -BREAKEVEN_THRESHOLD) {
+    } else if (pnl < -band) {
       existing.losses += 1
     } else {
       existing.breakevens += 1

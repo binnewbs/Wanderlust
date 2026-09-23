@@ -10,15 +10,23 @@ import {
 } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { formatCurrency, formatDuration, formatRatio } from '@/lib/analytics'
+import {
+  breakevenThreshold,
+  closeBalancesById,
+  formatCurrency,
+  formatDuration,
+  formatRatio
+} from '@/lib/analytics'
 import type { Order } from '@/store/trading'
 import { BookOpen } from 'lucide-react'
 
 interface TradeJournalProps {
   orders: Order[]
+  startBalance: number
 }
 
 type OutcomeFilter = 'all' | 'win' | 'loss' | 'breakeven'
+type TradeOutcome = 'win' | 'loss' | 'breakeven'
 
 function fmtPrice(n: number | undefined): string {
   if (n === undefined || !Number.isFinite(n)) return '—'
@@ -41,7 +49,10 @@ function fmtDate(ts: number | undefined): string {
   ).padStart(2, '0')}`
 }
 
-export default function TradeJournal({ orders }: TradeJournalProps): React.JSX.Element {
+export default function TradeJournal({
+  orders,
+  startBalance
+}: TradeJournalProps): React.JSX.Element {
   const [filter, setFilter] = useState<OutcomeFilter>('all')
 
   const closedTrades = useMemo(() => {
@@ -56,16 +67,37 @@ export default function TradeJournal({ orders }: TradeJournalProps): React.JSX.E
       })
   }, [orders])
 
+  // Per-trade outcome, classified against ±0.05% of the account balance at the
+  // trade's own close (a small result on a large account is a breakeven, the
+  // same dollars on a small account a real win/loss).
+  const outcomes = useMemo(() => {
+    const balances = closeBalancesById(startBalance, orders)
+    const map = new Map<string, TradeOutcome>()
+    for (const t of closedTrades) {
+      const pnl = t.pnl ?? 0
+      const band = breakevenThreshold(balances.get(t.id) ?? startBalance)
+      map.set(t.id, pnl > band ? 'win' : pnl < -band ? 'loss' : 'breakeven')
+    }
+    return map
+  }, [closedTrades, startBalance, orders])
+
+  const counts = useMemo(() => {
+    let win = 0
+    let loss = 0
+    let breakeven = 0
+    for (const t of closedTrades) {
+      const outcome = outcomes.get(t.id)
+      if (outcome === 'win') win += 1
+      else if (outcome === 'loss') loss += 1
+      else breakeven += 1
+    }
+    return { win, loss, breakeven }
+  }, [closedTrades, outcomes])
+
   const filteredTrades = useMemo(() => {
     if (filter === 'all') return closedTrades
-    return closedTrades.filter((t) => {
-      const pnl = t.pnl ?? 0
-      if (filter === 'win') return pnl > 0.001
-      if (filter === 'loss') return pnl < -0.001
-      if (filter === 'breakeven') return Math.abs(pnl) <= 0.001
-      return true
-    })
-  }, [closedTrades, filter])
+    return closedTrades.filter((t) => outcomes.get(t.id) === filter)
+  }, [closedTrades, filter, outcomes])
 
   return (
     <Card className="bg-card/70 backdrop-blur-xs">
@@ -96,7 +128,7 @@ export default function TradeJournal({ orders }: TradeJournalProps): React.JSX.E
               onClick={() => setFilter('win')}
               className="font-mono text-xs text-chart-2"
             >
-              Wins ({closedTrades.filter((t) => (t.pnl ?? 0) > 0.001).length})
+              Wins ({counts.win})
             </Button>
             <Button
               variant={filter === 'loss' ? 'secondary' : 'ghost'}
@@ -104,7 +136,7 @@ export default function TradeJournal({ orders }: TradeJournalProps): React.JSX.E
               onClick={() => setFilter('loss')}
               className="font-mono text-xs text-destructive"
             >
-              Losses ({closedTrades.filter((t) => (t.pnl ?? 0) < -0.001).length})
+              Losses ({counts.loss})
             </Button>
             <Button
               variant={filter === 'breakeven' ? 'secondary' : 'ghost'}
@@ -112,7 +144,7 @@ export default function TradeJournal({ orders }: TradeJournalProps): React.JSX.E
               onClick={() => setFilter('breakeven')}
               className="font-mono text-xs"
             >
-              BE ({closedTrades.filter((t) => Math.abs(t.pnl ?? 0) <= 0.001).length})
+              BE ({counts.breakeven})
             </Button>
           </div>
         </div>
@@ -142,10 +174,10 @@ export default function TradeJournal({ orders }: TradeJournalProps): React.JSX.E
               </TableHeader>
               <TableBody>
                 {filteredTrades.map((t) => {
-                  const pnl = t.pnl ?? 0
-                  const isWin = pnl > 0.001
-                  const isLoss = pnl < -0.001
-                  const outcome = isWin ? 'WIN' : isLoss ? 'LOSS' : 'BREAKEVEN'
+                  const outcome = outcomes.get(t.id) ?? 'breakeven'
+                  const isWin = outcome === 'win'
+                  const isLoss = outcome === 'loss'
+                  const outcomeLabel = isWin ? 'WIN' : isLoss ? 'LOSS' : 'BREAKEVEN'
                   const outcomeVariant = isWin ? 'secondary' : isLoss ? 'destructive' : 'outline'
 
                   // Compute realized RR: actual PnL ÷ the dollars risked at
@@ -178,7 +210,7 @@ export default function TradeJournal({ orders }: TradeJournalProps): React.JSX.E
                           variant={outcomeVariant}
                           className="h-5 px-1.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
                         >
-                          {outcome}
+                          {outcomeLabel}
                         </Badge>
                       </TableCell>
                       <TableCell className="font-mono text-[11px] text-muted-foreground whitespace-nowrap">
@@ -226,7 +258,7 @@ export default function TradeJournal({ orders }: TradeJournalProps): React.JSX.E
                           isWin ? 'text-chart-2' : isLoss ? 'text-destructive' : 'text-foreground'
                         }`}
                       >
-                        {formatCurrency(pnl)}
+                        {formatCurrency(t.pnl ?? 0)}
                       </TableCell>
                       <TableCell className="text-right font-mono text-xs text-muted-foreground">
                         {initialRisk > 0 ? `${formatRatio(realizedRr)}R` : '—'}

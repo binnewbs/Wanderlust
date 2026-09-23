@@ -53,8 +53,8 @@ export default function AnalyticsView({
   }, [startBalance, orders])
 
   const dayStats = useMemo(() => {
-    return calculateDayOfWeekStats(orders)
-  }, [orders])
+    return calculateDayOfWeekStats(startBalance, orders)
+  }, [startBalance, orders])
 
   const isProfitable = kpis.netProfit >= 0
 
@@ -146,7 +146,11 @@ export default function AnalyticsView({
           value="calendar"
           className={tabContentClassName(slideDir, 'focus-visible:outline-hidden')}
         >
-          <CalendarPnl orders={orders} defaultDate={session?.startDate} />
+          <CalendarPnl
+            orders={orders}
+            defaultDate={session?.startDate}
+            startBalance={startBalance}
+          />
         </TabsContent>
 
         {/* TAB 4: Trade Journal */}
@@ -154,7 +158,7 @@ export default function AnalyticsView({
           value="journal"
           className={tabContentClassName(slideDir, 'focus-visible:outline-hidden')}
         >
-          <TradeJournal orders={orders} />
+          <TradeJournal orders={orders} startBalance={startBalance} />
         </TabsContent>
       </Tabs>
     </div>

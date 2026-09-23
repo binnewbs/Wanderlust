@@ -4,17 +4,30 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon } from 'lucide-react'
-import { formatCurrency, type CalendarDayStat } from '@/lib/analytics'
+import {
+  breakevenThreshold,
+  closeBalancesById,
+  formatCurrency,
+  getClosedTrades,
+  type CalendarDayStat
+} from '@/lib/analytics'
 import type { Order } from '@/store/trading'
 
 interface CalendarPnlProps {
   orders: Order[]
   defaultDate?: string // ISO date e.g. '2024-01-15'
+  /** Seed for the balance-at-close reconstruction that sizes each trade's
+   *  breakeven band (±0.05% of the balance at that trade's close). */
+  startBalance: number
 }
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
-export default function CalendarPnl({ orders, defaultDate }: CalendarPnlProps): React.JSX.Element {
+export default function CalendarPnl({
+  orders,
+  defaultDate,
+  startBalance
+}: CalendarPnlProps): React.JSX.Element {
   // Determine initial month from defaultDate or first closed trade or today
   const initialDate = useMemo(() => {
     if (defaultDate) {
@@ -34,10 +47,16 @@ export default function CalendarPnl({ orders, defaultDate }: CalendarPnlProps): 
   )
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
 
-  // Map of YYYY-MM-DD -> CalendarDayStat
-  const statsMap = useMemo(() => {
+  // Map of YYYY-MM-DD -> CalendarDayStat, plus the account balance at the END
+  // of each trading day (the last close's post-PnL balance) — the reference the
+  // day itself is graded against as green/red/breakeven.
+  const { map: statsMap, dayEndBalance } = useMemo(() => {
     const map = new Map<string, CalendarDayStat>()
-    const closed = orders.filter((o) => o.status === 'closed' && o.pnl !== undefined)
+    const dayEndBalance = new Map<string, number>()
+    const balances = closeBalancesById(startBalance, orders)
+    // Chronological exit order — repeated assignment below leaves the LAST
+    // close's balance in dayEndBalance.
+    const closed = getClosedTrades(orders)
 
     for (const trade of closed) {
       const time = trade.closedAtTime ?? trade.filledAtTime
@@ -61,9 +80,11 @@ export default function CalendarPnl({ orders, defaultDate }: CalendarPnlProps): 
       const pnl = trade.pnl ?? 0
       stat.netPnl += pnl
       stat.tradeCount += 1
-      if (pnl > 0.001) {
+      // Per-trade outcome: ±0.05% of the balance at THIS trade's close.
+      const band = breakevenThreshold(balances.get(trade.id) ?? startBalance)
+      if (pnl > band) {
         stat.wins += 1
-      } else if (pnl < -0.001) {
+      } else if (pnl < -band) {
         stat.losses += 1
       } else {
         stat.breakevens += 1
@@ -71,9 +92,10 @@ export default function CalendarPnl({ orders, defaultDate }: CalendarPnlProps): 
 
       stat.winRate = stat.tradeCount > 0 ? (stat.wins / stat.tradeCount) * 100 : 0
       map.set(key, stat)
+      dayEndBalance.set(key, (balances.get(trade.id) ?? startBalance) + pnl)
     }
-    return map
-  }, [orders])
+    return { map, dayEndBalance }
+  }, [orders, startBalance])
 
   const year = currentMonth.getFullYear()
   const month = currentMonth.getMonth()
@@ -127,9 +149,11 @@ export default function CalendarPnl({ orders, defaultDate }: CalendarPnlProps): 
       if (stat && stat.tradeCount > 0) {
         netPnl += stat.netPnl
         totalTrades += stat.tradeCount
-        if (stat.netPnl > 0.001) {
+        // The day is green/red/breakeven against ±0.05% of the balance it ends with.
+        const dayBand = breakevenThreshold(dayEndBalance.get(key) ?? startBalance)
+        if (stat.netPnl > dayBand) {
           greenDays += 1
-        } else if (stat.netPnl < -0.001) {
+        } else if (stat.netPnl < -dayBand) {
           redDays += 1
         } else {
           breakevenDays += 1
@@ -145,7 +169,7 @@ export default function CalendarPnl({ orders, defaultDate }: CalendarPnlProps): 
     }
     const winRate = greenDays + redDays > 0 ? (greenDays / (greenDays + redDays)) * 100 : 0
     return { netPnl, totalTrades, greenDays, redDays, breakevenDays, winRate, bestDay, worstDay }
-  }, [year, month, daysInMonth, statsMap])
+  }, [year, month, daysInMonth, statsMap, dayEndBalance, startBalance])
 
   const monthName = currentMonth.toLocaleString('en-US', { month: 'long', year: 'numeric' })
 
@@ -306,8 +330,11 @@ export default function CalendarPnl({ orders, defaultDate }: CalendarPnlProps): 
                   )
                 }
 
-                const isProfitable = stat.netPnl > 0.001
-                const isLoss = stat.netPnl < -0.001
+                // A day inside ±0.05% of the balance it ends with is a
+                // breakeven day (neutral cell), not a green/red one.
+                const dayBand = breakevenThreshold(dayEndBalance.get(cell.dateKey) ?? startBalance)
+                const isProfitable = stat.netPnl > dayBand
+                const isLoss = stat.netPnl < -dayBand
 
                 const cellStyle = isProfitable
                   ? 'border-chart-2/40 bg-chart-2/10 text-chart-2 hover:bg-chart-2/20'
@@ -345,7 +372,7 @@ export default function CalendarPnl({ orders, defaultDate }: CalendarPnlProps): 
                         <div className="flex items-center justify-between text-[10px] opacity-60">
                           <span>{stat.tradeCount} orders</span>
                           <span className="font-semibold uppercase">
-                            {stat.netPnl >= 0 ? 'win' : 'loss'}
+                            {stat.netPnl > dayBand ? 'win' : stat.netPnl < -dayBand ? 'loss' : 'be'}
                           </span>
                         </div>
                       </div>
@@ -423,7 +450,12 @@ export default function CalendarPnl({ orders, defaultDate }: CalendarPnlProps): 
                     <p className="text-[11px] text-muted-foreground">{selectedDate}</p>
                   </div>
                   <Badge
-                    variant={selectedDayStat.netPnl >= 0 ? 'secondary' : 'destructive'}
+                    variant={
+                      selectedDayStat.netPnl >=
+                      -breakevenThreshold(dayEndBalance.get(selectedDate) ?? startBalance)
+                        ? 'secondary'
+                        : 'destructive'
+                    }
                     className="font-mono text-xs font-bold"
                   >
                     {formatCurrency(selectedDayStat.netPnl)}
