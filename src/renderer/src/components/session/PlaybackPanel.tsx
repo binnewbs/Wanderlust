@@ -44,24 +44,20 @@ import {
 } from '@/components/ui/popover'
 import { Separator } from '@/components/ui/separator'
 import { Slider } from '@/components/ui/slider'
-import {
-  indexAtOrAfter,
-  sessionBaseCandles,
-  revealedTime,
-  stepIndexForTimeframe,
-  useSessionStore
-} from '@/store/session'
+import { clockNowMs, clockStepIndex, sessionClockCandles, useSessionStore } from '@/store/session'
 import { lastSltpCloseIndex } from '@/store/trading'
 import { formatDateUtc, parseDateUtc } from '@/lib/dates'
+import { toast } from 'sonner'
+import { CLOCK_MS, indexClosingAtOrBefore } from '@shared/timeframes'
 
 /**
- * Playback control panel (Phase 4 wires the loop).
+ * Playback control panel.
  *
- * Play/Pause drives a `setInterval` that advances the store's `currentIndex`
- * one candle per tick (delay from the speed slider); VelaChart reacts to the
- * index change and re-slices the chart. Step Forward/Back, Skip to start/end,
- * and Go To (jump to a date) move the index directly — the chart re-slices on
- * any index change, whatever the size of the jump.
+ * Play/Pause drives a `setInterval` that advances the single M1 clock to the
+ * next boundary of the timeframe ON SCREEN (delay from the speed slider) — one
+ * visible bar per tick, one minute on an m1 view. Step Forward/Back, Skip to
+ * start/end, and Go To (jump to a date) move the clock directly; the chart
+ * re-slices on any index change, whatever the size of the jump.
  */
 
 /** Interval delay (ms) for a speed value (1..120): 120 → 50 ms (20 bars/s). */
@@ -200,12 +196,12 @@ export default function PlaybackPanel(): React.JSX.Element {
   const speed = useSessionStore((s) => s.speed)
   const orders = useSessionStore((s) => s.orders)
 
-  const baseCandles = sessionBaseCandles(session)
-  const totalCandles = baseCandles.length
-  // The readout shows the last revealed candle INCLUDING run-up context: at
-  // index 0 that's the run-up day's last candle, so a fresh session reads e.g.
-  // "2024-01-02 23:59 UTC" (yesterday's close) instead of '—'.
-  const currentTime = revealedTime(session, currentIndex)
+  const clockCandles = sessionClockCandles(session)
+  const totalCandles = clockCandles.length
+  // The readout shows the CLOCK: the close of the last revealed minute, so a
+  // fresh session reads e.g. "2024-01-02 24:00 UTC" (yesterday's close) and an
+  // m15 view sitting mid-bucket reads the exact instant the forming bar is on.
+  const currentTime = clockNowMs(session, currentIndex)
 
   const togglePlay = useSessionStore((s) => s.togglePlay)
   const stepForward = useSessionStore((s) => s.stepForward)
@@ -244,13 +240,14 @@ export default function PlaybackPanel(): React.JSX.Element {
   const [warnDialogOpen, setWarnDialogOpen] = useState(false)
   const [warnChecked, setWarnChecked] = useState(false)
 
-  // Playback loop: advance one candle per tick while playing. The interval is
-  // re-armed only when play state or speed changes.
+  // Playback loop: advance to the next bar boundary of the viewed timeframe
+  // while playing. The interval is re-armed only when play state or speed
+  // changes.
   useEffect(() => {
     if (!playing) return
     const id = window.setInterval(() => {
       const st = useSessionStore.getState()
-      if (st.currentIndex >= sessionBaseCandles(st.session).length) {
+      if (st.currentIndex >= sessionClockCandles(st.session).length) {
         st.pause()
         return
       }
@@ -258,6 +255,15 @@ export default function PlaybackPanel(): React.JSX.Element {
     }, delayForSpeed(speed))
     return () => window.clearInterval(id)
   }, [playing, speed])
+
+  // A resumed session that had to be migrated onto the M1 clock says so once.
+  const migrationNotice = useSessionStore((s) => s.migrationNotice)
+  const dismissMigrationNotice = useSessionStore((s) => s.dismissMigrationNotice)
+  useEffect(() => {
+    if (!migrationNotice) return
+    toast.info(migrationNotice)
+    dismissMigrationNotice()
+  }, [migrationNotice, dismissMigrationNotice])
 
   /** Route a user's backward move through the guard dialogs. `target` is the
    *  destination index the move will land on (`undefined` when not known
@@ -320,7 +326,7 @@ export default function PlaybackPanel(): React.JSX.Element {
         // Holding Shift+Space steps back repeatedly — routed through the
         // go-back dialog flow.
         event.preventDefault()
-        const target = stepIndexForTimeframe(st.session, st.currentIndex, st.playbackTimeframe, -1)
+        const target = clockStepIndex(st.session, st.currentIndex, st.playbackTimeframe, -1)
         attemptBackwardRef.current(st.stepBackward, target)
       } else if (!event.metaKey && !event.altKey) {
         // Ignore key repeats so holding Space doesn't jitter play/pause.
@@ -389,7 +395,7 @@ export default function PlaybackPanel(): React.JSX.Element {
     setGotoMenuOpen(false)
     const ts = Date.UTC(y, m - 1, d)
     const st = useSessionStore.getState()
-    const target = indexAtOrAfter(sessionBaseCandles(st.session), ts)
+    const target = indexClosingAtOrBefore(sessionClockCandles(st.session), ts, CLOCK_MS)
     // A custom-date jump behind the clock is a backward move: ask whether the
     // jump should just view that date's chart (account untouched) or fully
     // rewind and erase the positions and PnL taken since then.
@@ -433,7 +439,7 @@ export default function PlaybackPanel(): React.JSX.Element {
           onClick={() =>
             attemptBackward(
               stepBackward,
-              stepIndexForTimeframe(session, currentIndex, playbackTimeframe, -1)
+              clockStepIndex(session, currentIndex, playbackTimeframe, -1)
             )
           }
           data-testid="playback-step-back"

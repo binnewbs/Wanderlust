@@ -42,6 +42,67 @@ export function timeframeMs(tf: Timeframe): number {
   return TIMEFRAME_MS[tf]
 }
 
+/**
+ * THE CLOCK. A session tracks "now" in M1 and nothing else — every coarser
+ * timeframe is aggregated from these minutes, so there is exactly one time
+ * basis in the app (one reveal index, one order-evaluation cadence, one
+ * notion of what the chart's right edge means).
+ */
+export const CLOCK_TIMEFRAME = 'm1' as const
+export const CLOCK_MS = TIMEFRAME_MS.m1
+
+/**
+ * Start of the aggregation bucket a candle opening at `ts` belongs to.
+ * UTC-aligned (minute/hour/day), matching the main process's `aggregateM1`
+ * so renderer-built bars are byte-identical to the cached ones.
+ */
+export function bucketStart(ts: number, tfMs: number): number {
+  return Math.floor(ts / tfMs) * tfMs
+}
+
+/** Close time of a bar that opens at `openMs`. "Now" is always a bar CLOSE. */
+export function barCloseMs(openMs: number, tfMs: number): number {
+  return openMs + tfMs
+}
+
+/**
+ * The first bucket boundary STRICTLY after `now`. Stepping forward on a
+ * coarser view reveals minutes until the clock reaches exactly this instant —
+ * so a 15m chart at 10:04 steps to 10:15, and one already sitting exactly on
+ * a boundary steps to the FOLLOWING one (one visible bar per press).
+ */
+export function nextBoundaryMs(now: number, tfMs: number): number {
+  return (Math.floor(now / tfMs) + 1) * tfMs
+}
+
+/** The bucket boundary at or before `now` — where a coarser view steps back to. */
+export function prevBoundaryMs(now: number, tfMs: number): number {
+  return Math.floor(now / tfMs) * tfMs
+}
+
+/**
+ * How many candles are revealed once the clock has fast-forwarded to
+ * `boundaryMs`: every candle whose bar CLOSES at or before it. This is the
+ * count a boundary-aligned step lands on, so the step stops at exactly the
+ * requested instant (and short of it when the data has a gap there).
+ * Returns 0 when the boundary precedes the first candle, `candles.length`
+ * when it is at or past the last one.
+ */
+export function indexClosingAtOrBefore(
+  candles: Candle[],
+  boundaryMs: number,
+  barMs: number = CLOCK_MS
+): number {
+  let lo = 0
+  let hi = candles.length
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (candles[mid].timestamp + barMs <= boundaryMs) lo = mid + 1
+    else hi = mid
+  }
+  return lo
+}
+
 /** How much market time the session's run-up context must cover. */
 export const RUNUP_TARGET_MS = 24 * 60 * 60 * 1000
 

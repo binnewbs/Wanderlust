@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { toast } from 'sonner'
-import { sessionBaseCandles, sessionBaseRunUp, useSessionStore } from '@/store/session'
+import { sessionClockCandles, sessionClockRunUp, useSessionStore } from '@/store/session'
 import type { Order } from '@/store/trading'
 import {
   PRICE_PANE_ID,
@@ -138,8 +138,8 @@ export default function OrderLevelsOverlay(): React.JSX.Element {
   const strips = useMemo((): StripSpec[] => {
     const out: StripSpec[] = []
     if (!session) return out
-    const base = sessionBaseCandles(session)
-    const runUp = sessionBaseRunUp(session)
+    const base = sessionClockCandles(session)
+    const runUp = sessionClockRunUp(session)
     const livePrice =
       currentIndex > 0
         ? base[currentIndex - 1]?.close

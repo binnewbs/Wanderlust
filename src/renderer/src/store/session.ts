@@ -2,8 +2,12 @@ import { create } from 'zustand'
 import type { Asset } from '@shared/assets'
 import type { Candle, DownloadBatchResult, DownloadProgressEvent } from '@shared/ipc'
 import {
+  CLOCK_MS,
+  CLOCK_TIMEFRAME,
   RUNUP_TARGET_MS,
-  TIMEFRAMES,
+  indexClosingAtOrBefore,
+  nextBoundaryMs,
+  prevBoundaryMs,
   runUpTail,
   timeframeMs,
   type Timeframe
@@ -26,11 +30,13 @@ import {
 /**
  * The backtest session's state machine.
  *
- * A session downloads EVERY timeframe (m1…d1) for the chosen range in ONE batch
- * IPC call, streams progress into the UI, and stores the candles per timeframe
- * (`candlesByTimeframe`) — the per-timeframe `masterCandleArray`s the playback
- * loop slices in Phase 4. Fields marked "Phase 4" are seeded now so the store
- * shape stays stable when the playback loop lands.
+ * ONE CLOCK, IN M1. A session downloads only the M1 candles for the chosen
+ * range in ONE batch IPC call, streams progress into the UI, and stores them as
+ * the session's `clockCandles`. Coarser timeframes are never loaded into the
+ * renderer: the chart AGGREGATES the revealed minutes into whatever timeframe
+ * is on screen (see chart/sessionProvider), so `currentIndex`, the chart's
+ * right edge and the order engine all speak ONE time basis and cannot drift
+ * apart.
  */
 
 export type SessionStatus = 'idle' | 'downloading' | 'ready' | 'error'
@@ -44,7 +50,9 @@ export interface NewSessionInput {
   name?: string
   asset: Asset
   /** Dukascopy timeframe id ('m1' | 'm5' | 'm15' | 'm30' | 'h1' | 'h4' | 'd1')
-   *  — the chart's INITIAL timeframe; every timeframe is downloaded regardless. */
+   *  — the chart's INITIAL VIEW. It is NOT the clock: the clock is always M1
+   *  whatever this says, and this value only decides which timeframe the chart
+   *  opens on (and how the session is named). */
   timeframe: Timeframe
   /** ISO date, inclusive start (e.g. '2024-01-02') */
   startDate: string
@@ -66,6 +74,10 @@ export interface SavedSession {
   orders: Order[]
   currentIndex: number
   playbackTimeframe: Timeframe
+  /** Which timeframe `currentIndex` and the orders' index stamps count. Always
+   *  'm1' now; sessions saved before the single-clock change LACK this field
+   *  and are migrated onto the M1 clock by timestamp on resume. */
+  clockTimeframe?: Timeframe
   createdAt: number
   updatedAt: number
   /** Pinned sessions are hoisted above the rest in the main menu. */
@@ -75,14 +87,13 @@ export interface SavedSession {
 export interface ActiveSession extends NewSessionInput {
   id: string
   name: string
-  /** Candles for every downloaded timeframe, keyed by dukascopy timeframe id. */
-  candlesByTimeframe: Partial<Record<Timeframe, Candle[]>>
-  /** Candles of the day(s) downloaded as run-up context, keyed by dukascopy
-   *  timeframe id — what the chart shows BEFORE any session candle is revealed,
-   *  so a session never starts on a blank chart. */
-  runUpByTimeframe: Partial<Record<Timeframe, Candle[]>>
-  /** Where each timeframe's data came from ('cache' | 'dukascopy' | 'mixed') */
-  sources: Partial<Record<Timeframe, string>>
+  /** M1 candles of the session range — the session's ONLY dataset. */
+  clockCandles: Candle[]
+  /** M1 candles of the day(s) before the session, shown BEFORE any session
+   *  minute is revealed so a session never starts on a blank chart. */
+  clockRunUp: Candle[]
+  /** Where the clock candles came from ('cache' | 'dukascopy' | 'mixed'). */
+  source: string
 }
 
 export interface SessionState {
@@ -91,28 +102,35 @@ export interface SessionState {
   /** Progress events streamed from the main process during a download */
   progress: DownloadProgressEvent[]
   error: string | null
-  // --- playback state (Phase 4) ---
-  /** Index into the session's base-timeframe candles — how much of the session
-   *  is "revealed". The chart shows `masterCandleArray.slice(0, currentIndex)`. */
+  /** One-shot message surfaced as a toast when a saved session had to be
+   *  migrated onto the M1 clock (cleared by `dismissMigrationNotice`). */
+  migrationNotice: string | null
+  dismissMigrationNotice: () => void
+  // --- playback state (the single M1 clock) ---
+  /** How many M1 candles of the session are revealed. The clock's "now" is the
+   *  CLOSE of candle `currentIndex - 1`; the chart aggregates those minutes
+   *  into whichever timeframe is on screen. */
   currentIndex: number
-  /** Timeframe currently displayed by the chart; stepping follows this bar cadence. */
+  /** Timeframe the chart is currently showing; a step/play tick advances the
+   *  M1 clock to the next boundary of THIS bar length (one visible bar). */
   playbackTimeframe: Timeframe
   playing: boolean
   /** 1..120 — the speed slider; maps to the playback interval delay */
   speed: number
 
-  // --- playback controls (Phase 4) ---
-  /** Play/pause; pressing play after the end restarts from candle 0 */
+  // --- playback controls ---
+  /** Play/pause; pressing play after the end restarts from minute 0 */
   togglePlay: () => void
   pause: () => void
-  /** Advance one candle WITHOUT changing play state (the loop's per-tick op) */
+  /** Advance to the next boundary of the viewed timeframe WITHOUT changing
+   *  play state (the loop's per-tick op) */
   advance: () => void
   stepForward: () => void
   stepBackward: () => void
   setPlaybackTimeframe: (timeframe: Timeframe) => void
   skipToStart: () => void
   skipToEnd: () => void
-  /** Jump to the first candle that opens at or after `timestamp` (Go To) */
+  /** Reveal every minute that closes at or before `timestamp` (Go To) */
   goToTimestamp: (timestamp: number) => void
   /** Transient "pan the chart view to this timestamp" request (Go To → Custom
    *  Date → "Just view the chart"). VelaChart consumes it and clears it back
@@ -194,42 +212,48 @@ export interface SessionState {
   chartSelectionFor: (id: string) => string | undefined
 }
 
-/** Candles of the session's initial timeframe — the playback panel's counter. */
-export function sessionBaseCandles(session: ActiveSession | null): Candle[] {
+/** The session's M1 candles — the clock, and the playback panel's counter. */
+export function sessionClockCandles(session: ActiveSession | null): Candle[] {
   if (!session) return []
-  return session.candlesByTimeframe[session.timeframe] ?? []
+  return session.clockCandles
 }
 
-/** Candles of the run-up day(s) for the session's initial timeframe. */
-export function sessionBaseRunUp(session: ActiveSession | null): Candle[] {
+/** M1 candles of the run-up day(s) — context shown before the first reveal. */
+export function sessionClockRunUp(session: ActiveSession | null): Candle[] {
   if (!session) return []
-  return session.runUpByTimeframe[session.timeframe] ?? []
+  return session.clockRunUp
 }
 
-/** Latest revealed market close — the last revealed base candle's close, or the
- *  run-up's last candle at index 0. What the chart's right edge points at now. */
+/**
+ * "Now" on the clock: the CLOSE of the last revealed M1 candle (at index 0,
+ * the run-up's last minute's close). This is the single notion of time the
+ * whole app runs on — the chart's right edge, the step targets, the playback
+ * readout and the order engine all resolve to it.
+ */
+export function clockNowMs(
+  session: ActiveSession | null,
+  currentIndex: number
+): number | undefined {
+  const clock = sessionClockCandles(session)
+  if (currentIndex > 0) {
+    const last = clock[currentIndex - 1]
+    if (last) return last.timestamp + CLOCK_MS
+  }
+  const runUp = sessionClockRunUp(session)
+  const lastRunUp = runUp[runUp.length - 1]
+  return lastRunUp ? lastRunUp.timestamp + CLOCK_MS : undefined
+}
+
+/** Latest revealed market close — the last revealed minute's close, or the
+ *  run-up's last close at index 0. What orders fill/exit against right now. */
 export function latestRevealedClose(
   session: ActiveSession | null,
   currentIndex: number
 ): number | undefined {
-  const base = sessionBaseCandles(session)
-  if (currentIndex > 0) return base[currentIndex - 1]?.close
-  const runUp = sessionBaseRunUp(session)
+  const clock = sessionClockCandles(session)
+  if (currentIndex > 0) return clock[currentIndex - 1]?.close
+  const runUp = sessionClockRunUp(session)
   return runUp.length > 0 ? runUp[runUp.length - 1]?.close : undefined
-}
-
-/** Timestamp of the LAST revealed candle (run-up included): at index 0 the
- *  run-up's last candle, otherwise the revealed session candle — what the
- *  chart's right edge is pointing at right now. */
-export function revealedTime(
-  session: ActiveSession | null,
-  currentIndex: number
-): number | undefined {
-  if (!session) return undefined
-  const base = sessionBaseCandles(session)
-  if (currentIndex > 0) return base[currentIndex - 1]?.timestamp
-  const runUp = sessionBaseRunUp(session)
-  return runUp.length > 0 ? runUp[runUp.length - 1].timestamp : undefined
 }
 
 /** How many calendar days back the run-up may reach when assembling a full
@@ -265,28 +289,48 @@ export function indexAtOrAfter(candles: Candle[], ts: number): number {
   return lo
 }
 
-/** Reveal index that adds/removes exactly one bar on the currently viewed timeframe. */
-export function stepIndexForTimeframe(
+/**
+ * The reveal index one boundary-aligned step away on a view showing `tf`.
+ *
+ * The clock is always M1; this only decides HOW MANY MINUTES a step reveals.
+ * On a 1m view that is one minute. On a coarser view the step reveals exactly
+ * the minutes up to the next (or previous) bar boundary, so it always lands ON
+ * a bar CLOSE — a 15m chart at 10:04 steps to 10:15 and back to 10:00 — and the
+ * chart and the clock can never disagree about what "now" is.
+ *
+ * Gaps (weekends, session end) stop at the last minute that closed at or before
+ * the boundary; if that would be no progress at all, one minute is revealed
+ * anyway so the control is never a dead press.
+ */
+export function clockStepIndex(
   session: ActiveSession | null,
   currentIndex: number,
   tf: Timeframe,
   dir: 1 | -1
 ): number {
-  if (!session) return 0
-  const base = sessionBaseCandles(session)
-  const active = session.candlesByTimeframe[tf] ?? base
-  const runUp = sessionBaseRunUp(session)
-  const cutoff =
-    currentIndex > 0 ? base[currentIndex - 1]?.timestamp : runUp[runUp.length - 1]?.timestamp
-  if (cutoff === undefined) return dir > 0 ? Math.min(1, base.length) : 0
-  let visible = 0
-  while (visible < active.length && active[visible].timestamp <= cutoff) visible += 1
-  if (dir > 0) {
-    const next = active[visible]
-    return next ? Math.min(base.length, indexAtOrAfter(base, next.timestamp) + 1) : base.length
+  const clock = sessionClockCandles(session)
+  if (clock.length === 0) return 0
+  const tfMs = timeframeMs(tf)
+  if (tfMs <= CLOCK_MS) {
+    return dir > 0 ? Math.min(clock.length, currentIndex + 1) : Math.max(0, currentIndex - 1)
   }
-  const current = active[visible - 1]
-  return current ? indexAtOrAfter(base, current.timestamp) : 0
+  const now = clockNowMs(session, currentIndex) ?? clock[0].timestamp
+  if (dir > 0) {
+    const atBoundary = indexClosingAtOrBefore(clock, nextBoundaryMs(now, tfMs), CLOCK_MS)
+    if (atBoundary > currentIndex) return atBoundary
+    return Math.min(clock.length, currentIndex + 1)
+  }
+  // Backward: land on a bar close at or before now. Sitting EXACTLY on a
+  // boundary means the current bar is already complete, so the press goes back
+  // one further bar (10:15 → 10:00) — `prevBoundaryMs` alone would hand back
+  // the same boundary and turn the press into a no-op.
+  const boundary = prevBoundaryMs(now, tfMs)
+  const target = indexClosingAtOrBefore(
+    clock,
+    now === boundary ? boundary - tfMs : boundary,
+    CLOCK_MS
+  )
+  return Math.max(0, Math.min(target, currentIndex))
 }
 
 const SESSIONS_STORAGE_KEY = 'wanderlust_saved_sessions'
@@ -378,20 +422,81 @@ function hoistPinned(sessions: SavedSession[]): SavedSession[] {
   return [...sessions.filter((s) => s.pinned), ...sessions.filter((s) => !s.pinned)]
 }
 
-async function loadCandlesAndRunUp(
+/**
+ * Walk whole trading days back from the day before `startDate` until the M1
+ * window covers RUNUP_TARGET_MS of market time, then keep the tail.
+ * `fetchDay(day, remainingMs)` prepares one day in the cache and reports
+ * whether it settled in time: the fresh-download path fires a bounded batch
+ * request, the cache-only resume path just reads what is already there.
+ */
+async function collectRunUp(
   asset: Asset,
-  initialTimeframe: Timeframe,
+  startDate: string,
+  budgetMs: number,
+  fetchDay: (day: string, remainingMs: number) => Promise<boolean>
+): Promise<Candle[]> {
+  const runUpEnd = isoAddDays(startDate, -1)
+  let windowCandles: Candle[] = []
+  const startedAt = Date.now()
+  for (let back = 1; back <= SESSION_RUNUP_LOOKBACK_DAYS; back++) {
+    if (windowCandles.length * CLOCK_MS >= RUNUP_TARGET_MS) break
+    const day = isoAddDays(runUpEnd, -(back - 1))
+    // Skip non-trading days (weekends for non-crypto): nothing to download,
+    // and it avoids firing batch requests that would come back empty.
+    if (!isTradingDay(Date.parse(`${day}T00:00:00Z`), asset.id)) continue
+    const remaining = budgetMs - (Date.now() - startedAt)
+    if (remaining <= 0) break
+    if (!(await fetchDay(day, remaining))) break
+    const data = await window.api.getCachedData({
+      symbol: asset.id,
+      timeframe: CLOCK_TIMEFRAME,
+      startDate: day,
+      endDate: day
+    })
+    if (!data.ok || data.candles.length === 0) continue
+    windowCandles = windowCandles.length === 0 ? data.candles : data.candles.concat(windowCandles)
+  }
+  return runUpTail(windowCandles, CLOCK_MS)
+}
+
+/** Fire one day's batch download without letting a stalled request hang the
+ *  session: it must settle inside the remaining run-up budget. */
+async function fetchRunUpDay(asset: Asset, day: string, remainingMs: number): Promise<boolean> {
+  const dayFetch = window.api.downloadData({
+    symbol: asset.id,
+    timeframe: CLOCK_TIMEFRAME,
+    timeframes: [CLOCK_TIMEFRAME],
+    startDate: day,
+    endDate: day
+  })
+  const settled = await Promise.race([
+    dayFetch.then(
+      () => true,
+      () => false
+    ),
+    sleep(remainingMs).then(() => false)
+  ])
+  void dayFetch.then(
+    () => undefined,
+    () => undefined
+  )
+  return settled
+}
+
+/**
+ * Download the session's M1 clock plus its run-up context. This is the ONLY
+ * data a session loads: every coarser timeframe the chart can show is
+ * aggregated from these minutes at render time.
+ */
+async function loadClockAndRunUp(
+  asset: Asset,
   startDate: string,
   endDate: string
-): Promise<{
-  candlesByTimeframe: Partial<Record<Timeframe, Candle[]>>
-  runUpByTimeframe: Partial<Record<Timeframe, Candle[]>>
-  sources: Partial<Record<Timeframe, string>>
-}> {
+): Promise<{ candles: Candle[]; runUp: Candle[]; source: string }> {
   const request = {
     symbol: asset.id,
-    timeframe: initialTimeframe,
-    timeframes: [...TIMEFRAMES],
+    timeframe: CLOCK_TIMEFRAME,
+    timeframes: [CLOCK_TIMEFRAME],
     startDate,
     endDate
   }
@@ -404,82 +509,26 @@ async function loadCandlesAndRunUp(
     throw new Error(res.message ?? 'Download failed.')
   }
 
-  const candlesByTimeframe: Partial<Record<Timeframe, Candle[]>> = {}
-  for (const tf of TIMEFRAMES) {
-    const data = await window.api.getCachedData({
-      symbol: asset.id,
-      timeframe: tf,
-      startDate,
-      endDate
-    })
-    if (data.ok && data.candles.length > 0) candlesByTimeframe[tf] = data.candles
-  }
-  if (Object.values(candlesByTimeframe).every((c) => !c?.length)) {
+  const data = await window.api.getCachedData({
+    symbol: asset.id,
+    timeframe: CLOCK_TIMEFRAME,
+    startDate,
+    endDate
+  })
+  if (!data.ok || data.candles.length === 0) {
     throw new Error(
       'Dukascopy returned no candles for that range (weekends and holidays have no data). Try a different asset or date range.'
     )
   }
 
-  const sources: Partial<Record<Timeframe, string>> = {}
-  for (const tfRes of res.timeframes) {
-    sources[tfRes.timeframe as Timeframe] = tfRes.source
-  }
-
-  const runUpByTimeframe: Partial<Record<Timeframe, Candle[]>> = {}
-  const runUpEnd = isoAddDays(startDate, -1)
-  const windowCandles: Partial<Record<Timeframe, Candle[]>> = {}
-  const runUpMs = (tf: Timeframe): number => (windowCandles[tf]?.length ?? 0) * timeframeMs(tf)
   const usedNetwork = res.timeframes.some((tfRes) => tfRes.source !== 'cache')
-  const runUpBudgetMs = usedNetwork ? RUNUP_NETWORK_BUDGET_MS : RUNUP_CACHEONLY_BUDGET_MS
-  const runUpStartedAt = Date.now()
-  for (let back = 1; back <= SESSION_RUNUP_LOOKBACK_DAYS; back++) {
-    if (runUpMs(initialTimeframe) >= RUNUP_TARGET_MS) break
-    const day = isoAddDays(runUpEnd, -(back - 1))
-    // Skip non-trading days (weekends for non-crypto): nothing to download,
-    // and it avoids firing batch requests that would come back empty.
-    if (!isTradingDay(Date.parse(`${day}T00:00:00Z`), asset.id)) continue
-    const remaining = runUpBudgetMs - (Date.now() - runUpStartedAt)
-    if (remaining <= 0) break
-    const dayFetch = window.api.downloadData({
-      symbol: asset.id,
-      timeframe: initialTimeframe,
-      timeframes: [...TIMEFRAMES],
-      startDate: day,
-      endDate: day
-    })
-    const settled = await Promise.race([
-      dayFetch.then(
-        () => true,
-        () => false
-      ),
-      sleep(remaining).then(() => false)
-    ])
-    void dayFetch.then(
-      () => undefined,
-      () => undefined
-    )
-    if (!settled) break
-    for (const tf of Object.keys(candlesByTimeframe) as Timeframe[]) {
-      const data = await window.api.getCachedData({
-        symbol: asset.id,
-        timeframe: tf,
-        startDate: day,
-        endDate: day
-      })
-      if (!data.ok || data.candles.length === 0) continue
-      const prev = windowCandles[tf]
-      windowCandles[tf] = prev ? data.candles.concat(prev) : data.candles
-    }
-  }
-
-  for (const tf of Object.keys(candlesByTimeframe) as Timeframe[]) {
-    const win = windowCandles[tf]
-    if (!win || win.length === 0) continue
-    const runUp = runUpTail(win, timeframeMs(tf))
-    if (runUp.length > 0) runUpByTimeframe[tf] = runUp
-  }
-
-  return { candlesByTimeframe, runUpByTimeframe, sources }
+  const runUp = await collectRunUp(
+    asset,
+    startDate,
+    usedNetwork ? RUNUP_NETWORK_BUDGET_MS : RUNUP_CACHEONLY_BUDGET_MS,
+    (day, remaining) => fetchRunUpDay(asset, day, remaining)
+  )
+  return { candles: data.candles, runUp, source: res.timeframes[0]?.source ?? 'cache' }
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -487,8 +536,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   session: null,
   progress: [],
   error: null,
+  migrationNotice: null,
   currentIndex: 0,
-  playbackTimeframe: 'm1',
+  playbackTimeframe: CLOCK_TIMEFRAME,
   playing: false,
   speed: 30,
   balance: 0,
@@ -501,12 +551,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   savedSessions: loadSavedSessionsFromStorage(),
 
   dismissError: () => set({ error: null, status: 'idle' }),
+  dismissMigrationNotice: () => set({ migrationNotice: null }),
 
-  // --- playback controls (Phase 4) ---
+  // --- playback controls (the single M1 clock) ---
   togglePlay: () =>
     set((s) => {
-      const total = sessionBaseCandles(s.session).length
-      // At the end, play restarts the session from candle 0 — but never rewind
+      const total = sessionClockCandles(s.session).length
+      // At the end, play restarts the session from minute 0 — but never rewind
       // while a position is still open (close it in the Trading panel first).
       if (!s.playing && s.currentIndex >= total) {
         if (hasOpenPosition(s.orders)) return s
@@ -516,21 +567,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return { playing: !s.playing }
     }),
   pause: () => set({ playing: false }),
-  // Forward index moves evaluate open/pending orders over the candles that
-  // were just revealed (Phase 5): one candle on a tick, a whole range on a
-  // jump. Backward moves are gated while a position is open (you must close
-  // it first) and otherwise REWIND the account with restoreOrdersAt — realized
-  // PnL from trades taken later in the timeline is un-done, orders revert to
-  // their state at the destination index.
+  // Forward index moves evaluate open/pending orders over every minute that
+  // was just revealed: one minute on an m1 view, a whole bar's worth on a
+  // coarser one (the engine walks the range candle by candle, so fills and
+  // stops stay M1-precise even across a 15-minute jump). Backward moves are
+  // gated while a position is open (you must close it first) and otherwise
+  // REWIND the account with restoreOrdersAt — realized PnL from trades taken
+  // later in the timeline is un-done.
   advance: () =>
     set((s) => {
-      const total = sessionBaseCandles(s.session).length
-      const nextIndex = Math.min(s.currentIndex + 1, total)
-      if (nextIndex <= s.currentIndex) return { currentIndex: nextIndex }
+      const nextIndex = clockStepIndex(s.session, s.currentIndex, s.playbackTimeframe, 1)
+      // Nothing left to reveal (end of session) — stop the loop on this tick.
+      if (nextIndex <= s.currentIndex) return { playing: false }
       const ev = evaluateOrders(
         s.orders,
         s.balance,
-        sessionBaseCandles(s.session),
+        sessionClockCandles(s.session),
         s.currentIndex,
         nextIndex
       )
@@ -538,15 +590,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }),
   stepForward: () =>
     set((s) => {
-      const total = sessionBaseCandles(s.session).length
-      const nextIndex = Math.min(
-        stepIndexForTimeframe(s.session, s.currentIndex, s.playbackTimeframe, 1),
-        total
-      )
+      const nextIndex = clockStepIndex(s.session, s.currentIndex, s.playbackTimeframe, 1)
       const ev = evaluateOrders(
         s.orders,
         s.balance,
-        sessionBaseCandles(s.session),
+        sessionClockCandles(s.session),
         s.currentIndex,
         nextIndex
       )
@@ -556,7 +604,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((s) => {
       // No going backward inside a live position — close it first.
       if (hasOpenPosition(s.orders)) return s
-      const nextIndex = stepIndexForTimeframe(s.session, s.currentIndex, s.playbackTimeframe, -1)
+      const nextIndex = clockStepIndex(s.session, s.currentIndex, s.playbackTimeframe, -1)
       const rewound = restoreOrdersAt(s.orders, s.startBalance, nextIndex)
       return {
         playing: false,
@@ -575,11 +623,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }),
   skipToEnd: () =>
     set((s) => {
-      const total = sessionBaseCandles(s.session).length
+      const total = sessionClockCandles(s.session).length
       const ev = evaluateOrders(
         s.orders,
         s.balance,
-        sessionBaseCandles(s.session),
+        sessionClockCandles(s.session),
         s.currentIndex,
         total
       )
@@ -587,7 +635,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }),
   goToTimestamp: (ts) =>
     set((s) => {
-      const nextIndex = indexAtOrAfter(sessionBaseCandles(s.session), ts)
+      // Land ON the requested instant: reveal every minute that closes at or
+      // before it, so the clock reads exactly the date/time the user picked.
+      const nextIndex = indexClosingAtOrBefore(sessionClockCandles(s.session), ts, CLOCK_MS)
       const goingBack = nextIndex < s.currentIndex
       // A backward jump into a live position is refused: close it first.
       if (goingBack && hasOpenPosition(s.orders)) return s
@@ -603,7 +653,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const ev = evaluateOrders(
         s.orders,
         s.balance,
-        sessionBaseCandles(s.session),
+        sessionClockCandles(s.session),
         s.currentIndex,
         nextIndex
       )
@@ -621,7 +671,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // — restoreOrdersAt drops anything filled/closed at or after the target.
   rewindToTimestamp: (ts) =>
     set((s) => {
-      const nextIndex = indexAtOrAfter(sessionBaseCandles(s.session), ts)
+      const nextIndex = indexClosingAtOrBefore(sessionClockCandles(s.session), ts, CLOCK_MS)
       const rewound = restoreOrdersAt(s.orders, s.startBalance, nextIndex)
       return {
         playing: false,
@@ -746,6 +796,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // must not change what its R is measured against.
       initialRisk: Math.abs(orderPrice - input.stopLoss) * previewSize,
       submissionIndex: s.currentIndex,
+      // The clock instant, not the cursor: a saved session can always be
+      // re-based onto the M1 clock from this even if the index unit changes.
+      submissionTime: clockNowMs(s.session, s.currentIndex) ?? Date.now(),
       status: 'pending'
     }
     set({
@@ -804,11 +857,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           lastOrderResult: { ok: true, message: 'Pending order cancelled.' }
         }
       }
-      const base = sessionBaseCandles(s.session)
-      const runUp = sessionBaseRunUp(s.session)
+      const clock = sessionClockCandles(s.session)
+      const runUp = sessionClockRunUp(s.session)
       const candle =
         s.currentIndex > 0
-          ? base[s.currentIndex - 1]
+          ? clock[s.currentIndex - 1]
           : runUp.length > 0
             ? runUp[runUp.length - 1]
             : undefined
@@ -846,11 +899,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   flattenPositions: () =>
     set((s) => {
-      const base = sessionBaseCandles(s.session)
-      const runUp = sessionBaseRunUp(s.session)
+      const clock = sessionClockCandles(s.session)
+      const runUp = sessionClockRunUp(s.session)
       const candle =
         s.currentIndex > 0
-          ? base[s.currentIndex - 1]
+          ? clock[s.currentIndex - 1]
           : runUp.length > 0
             ? runUp[runUp.length - 1]
             : undefined
@@ -928,9 +981,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     })
 
     try {
-      const { candlesByTimeframe, runUpByTimeframe, sources } = await loadCandlesAndRunUp(
+      const { candles, runUp, source } = await loadClockAndRunUp(
         input.asset,
-        input.timeframe,
         input.startDate,
         input.endDate
       )
@@ -939,9 +991,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         ...input,
         id: sessionId,
         name: sessionName,
-        candlesByTimeframe,
-        runUpByTimeframe,
-        sources
+        clockCandles: candles,
+        clockRunUp: runUp,
+        source
       }
 
       const saved: SavedSession = {
@@ -956,6 +1008,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         orders: [],
         currentIndex: 0,
         playbackTimeframe: input.timeframe,
+        clockTimeframe: CLOCK_TIMEFRAME,
         createdAt: Date.now(),
         updatedAt: Date.now()
       }
@@ -1011,71 +1064,107 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     })
 
     try {
-      // 2. Try loading candles from SQLite cache first
-      const candlesByTimeframe: Partial<Record<Timeframe, Candle[]>> = {}
-      for (const tf of TIMEFRAMES) {
-        const data = await window.api.getCachedData({
-          symbol: target.asset.id,
-          timeframe: tf,
-          startDate: target.startDate,
-          endDate: target.endDate
-        })
-        if (data.ok && data.candles.length > 0) candlesByTimeframe[tf] = data.candles
+      // 2. Load the M1 clock from the SQLite cache first.
+      const cached = await window.api.getCachedData({
+        symbol: target.asset.id,
+        timeframe: CLOCK_TIMEFRAME,
+        startDate: target.startDate,
+        endDate: target.endDate
+      })
+      let clockCandles: Candle[] = cached.ok ? cached.candles : []
+      let clockRunUp: Candle[] = []
+      let source = 'cache'
+
+      if (clockCandles.length > 0) {
+        // Cache-only run-up: walk back whole trading days (cache reads cost
+        // nothing) until 24h of M1 market time is covered. A Monday-start
+        // session thus reaches Friday + Sunday, not just Sunday's stub. Mirrors
+        // the fresh-download walk without any network.
+        clockRunUp = await collectRunUp(
+          target.asset,
+          target.startDate,
+          RUNUP_CACHEONLY_BUDGET_MS,
+          async () => true
+        )
+      } else {
+        const loaded = await loadClockAndRunUp(target.asset, target.startDate, target.endDate)
+        clockCandles = loaded.candles
+        clockRunUp = loaded.runUp
+        source = loaded.source
       }
 
-      let runUpByTimeframe: Partial<Record<Timeframe, Candle[]>> = {}
-      let sources: Partial<Record<Timeframe, string>> = {}
-
-      const hasCachedCandles = Object.values(candlesByTimeframe).some((c) => c && c.length > 0)
-
-      if (hasCachedCandles) {
-        // Cache-only run-up: walk back whole trading days (cache reads cost
-        // nothing) until 24h of market time is covered. A Monday-start session
-        // thus reaches Friday + Sunday, not just Sunday's stub. Mirrors the
-        // fresh-download walk (loadCandlesAndRunUp) without any network.
-        const runUpEnd = isoAddDays(target.startDate, -1)
-        const windowCandles: Partial<Record<Timeframe, Candle[]>> = {}
-        const runUpMs = (tf: Timeframe): number =>
-          (windowCandles[tf]?.length ?? 0) * timeframeMs(tf)
-        for (const tf of TIMEFRAMES) sources[tf] = 'cache'
-
-        let back = 1
-        while (back <= SESSION_RUNUP_LOOKBACK_DAYS && runUpMs(target.timeframe) < RUNUP_TARGET_MS) {
-          const day = isoAddDays(runUpEnd, -(back - 1))
-          if (!isTradingDay(Date.parse(`${day}T00:00:00Z`), target.asset.id)) {
-            back++
-            continue
-          }
-          for (const tf of Object.keys(candlesByTimeframe) as Timeframe[]) {
-            const data = await window.api.getCachedData({
-              symbol: target.asset.id,
-              timeframe: tf,
-              startDate: day,
-              endDate: day
-            })
-            if (!data.ok || data.candles.length === 0) continue
-            const prev = windowCandles[tf]
-            windowCandles[tf] = prev ? data.candles.concat(prev) : data.candles
-          }
-          back++
+      // 3. A session saved BEFORE the single M1 clock counted BARS of its own
+      // initial timeframe in `currentIndex` and the orders' index stamps. Re-base
+      // it onto the clock BY TIMESTAMP — the fact both formats record — so the
+      // session resumes at the same wall-clock instant, revealed to the minute.
+      let currentIndex = target.currentIndex
+      let orders = target.orders
+      let migrationNotice: string | null = null
+      let savedSessions = get().savedSessions
+      if (target.clockTimeframe !== CLOCK_TIMEFRAME) {
+        // The legacy position: the last revealed bar covered [t, t + barMs), so
+        // the equivalent M1 position reveals every minute up to its CLOSE.
+        currentIndex = 0
+        if (target.currentIndex > 0) {
+          const legacy = await window.api.getCachedData({
+            symbol: target.asset.id,
+            timeframe: target.timeframe,
+            startDate: target.startDate,
+            endDate: target.endDate
+          })
+          const bar = legacy.ok ? legacy.candles[target.currentIndex - 1] : undefined
+          currentIndex = bar
+            ? indexClosingAtOrBefore(
+                clockCandles,
+                bar.timestamp + timeframeMs(target.timeframe),
+                CLOCK_MS
+              )
+            : 0
         }
-
-        for (const tf of Object.keys(candlesByTimeframe) as Timeframe[]) {
-          const win = windowCandles[tf]
-          if (!win || win.length === 0) continue
-          const runUp = runUpTail(win, timeframeMs(tf))
-          if (runUp.length > 0) runUpByTimeframe[tf] = runUp
-        }
-      } else {
-        const loaded = await loadCandlesAndRunUp(
-          target.asset,
-          target.timeframe,
-          target.startDate,
-          target.endDate
+        // Filled/closed orders carry their fill/exit TIMESTAMPS, so their
+        // indices are exactly re-derivable. Legacy PENDING orders have no
+        // submission timestamp — there is nothing to re-base them from — so
+        // they are dropped rather than silently placed in the wrong minute.
+        let droppedPending = 0
+        orders = target.orders.flatMap((order): Order[] => {
+          if (order.status === 'pending') {
+            droppedPending++
+            return []
+          }
+          return [
+            {
+              ...order,
+              filledAtIndex:
+                order.filledAtTime !== undefined
+                  ? indexAtOrAfter(clockCandles, order.filledAtTime)
+                  : order.filledAtIndex,
+              closedAtIndex:
+                order.closedAtTime !== undefined
+                  ? indexAtOrAfter(clockCandles, order.closedAtTime)
+                  : order.closedAtIndex
+            }
+          ]
+        })
+        migrationNotice = droppedPending
+          ? `Session moved to the 1-minute clock. ${droppedPending} pending order${
+              droppedPending === 1 ? '' : 's'
+            } could not be placed in time and ${droppedPending === 1 ? 'was' : 'were'} dropped.`
+          : 'Session moved to the 1-minute clock.'
+        // Write the migrated shape through BOTH the in-memory list and storage
+        // so the next resume is a plain M1 session (this one-time pass never
+        // runs twice) and no later save can resurrect the stale indices.
+        savedSessions = get().savedSessions.map((s) =>
+          s.id === target.id
+            ? {
+                ...s,
+                currentIndex,
+                orders,
+                clockTimeframe: CLOCK_TIMEFRAME,
+                updatedAt: Date.now()
+              }
+            : s
         )
-        Object.assign(candlesByTimeframe, loaded.candlesByTimeframe)
-        runUpByTimeframe = loaded.runUpByTimeframe
-        sources = loaded.sources
+        persistSavedSessionsToStorage(savedSessions)
       }
 
       const active: ActiveSession = {
@@ -1086,9 +1175,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         startDate: target.startDate,
         endDate: target.endDate,
         balance: target.startBalance,
-        candlesByTimeframe,
-        runUpByTimeframe,
-        sources
+        clockCandles,
+        clockRunUp,
+        source
       }
 
       activeSessionsCache.set(target.id, active)
@@ -1098,9 +1187,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         session: active,
         balance: target.balance,
         startBalance: target.startBalance,
-        orders: target.orders,
-        currentIndex: target.currentIndex,
+        orders,
+        currentIndex,
         playbackTimeframe: target.playbackTimeframe,
+        migrationNotice,
+        savedSessions,
         playing: false,
         selectedDrawing: null,
         lastOrderResult: null,

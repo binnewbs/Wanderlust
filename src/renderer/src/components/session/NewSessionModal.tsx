@@ -41,17 +41,18 @@ import { useSessionStore } from '@/store/session'
 /**
  * New Session modal (Phase 3): pick an asset, the chart's initial timeframe,
  * a date range and starting balance, then kick off the cache-first download.
- * The session downloads EVERY timeframe for the range in one batch; while the
- * main process works, the modal becomes a progress panel driven by the IPC
+ * The session downloads its M1 clock for the range in one batch — every
+ * timeframe the chart can show is grouped from those minutes — while the main
+ * process works, the modal becomes a progress panel driven by the IPC
  * progress events streamed into the session store.
  */
 
 const CATEGORIES = Array.from(new Set(ASSETS.map((a) => a.category)))
 
 /**
- * The chart-timeframe picker is currently hidden: a future feature lets the
- * user pick WHICH timeframes to download and use. Flip this to `true` to
- * re-enable the picker block below.
+ * The chart-timeframe picker is currently hidden: it only chooses the view the
+ * chart OPENS on (the clock is always M1, and any timeframe can be reached from
+ * the chart's own chips). Flip this to `true` to re-enable the picker block.
  */
 const TIMEFRAME_PICKER_ENABLED = false
 
@@ -136,7 +137,8 @@ export default function NewSessionModal({
         <DialogHeader>
           <DialogTitle>New backtest session</DialogTitle>
           <DialogDescription>
-            Download every timeframe for the range in one batch — cached locally for reuse.
+            Download the 1-minute history for the range in one batch — every timeframe is grouped
+            from it, and cached locally for reuse.
           </DialogDescription>
         </DialogHeader>
 
@@ -144,7 +146,7 @@ export default function NewSessionModal({
           /* -------- Loading state: progress streamed over IPC -------- */
           <div className="flex animate-in fade-in zoom-in-95 flex-col gap-3 duration-200">
             <p className="text-xs text-muted-foreground">
-              Downloading {asset?.label ?? assetId} {timeframe} · {startDate} → {endDate}
+              Downloading {asset?.label ?? assetId} 1m · {startDate} → {endDate}
             </p>
             <Progress value={latest?.percent ?? 0} className="progress-shimmer" />
             <p className="font-mono text-xs text-foreground">
@@ -249,9 +251,10 @@ export default function NewSessionModal({
                       </SelectContent>
                     </Select>
                     <FieldDescription>
-                      Initial view — every timeframe is downloaded, switch on the chart anytime. The
-                      previous 24 hours of candles are pre-loaded as run-up context, so the chart
-                      starts with a full day of price action instead of a blank screen.
+                      The view the chart opens on. Time runs on a 1-minute clock, so you can switch
+                      to any timeframe on the chart at any time. The previous 24 hours of price
+                      action is pre-loaded as run-up context, so the chart starts with a full day of
+                      candles instead of a blank screen.
                     </FieldDescription>
                   </Field>
                 )}

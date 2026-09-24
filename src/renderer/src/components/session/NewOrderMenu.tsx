@@ -14,7 +14,7 @@ import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { sessionBaseCandles, sessionBaseRunUp, useSessionStore } from '@/store/session'
+import { sessionClockCandles, sessionClockRunUp, useSessionStore } from '@/store/session'
 import {
   getOrderTypeRuleHint,
   sizeForRisk,
@@ -81,10 +81,10 @@ export default function NewOrderMenu({ onClose }: NewOrderMenuProps): React.JSX.
   // Last revealed close — the fill proxy for market orders (they enter at the
   // next candle's open, unknown ahead of time; preview shows ≈ size).
   const lastClose = useMemo(() => {
-    const base = sessionBaseCandles(session)
+    const base = sessionClockCandles(session)
     const revealed = currentIndex > 0 ? base[currentIndex - 1] : undefined
     if (revealed) return revealed.close
-    const runUp = sessionBaseRunUp(session)
+    const runUp = sessionClockRunUp(session)
     return runUp[runUp.length - 1]?.close
   }, [session, currentIndex])
 

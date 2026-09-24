@@ -75,8 +75,8 @@ export default function App(): React.JSX.Element {
     ? `${session.id}-${session.asset.id}-${session.timeframe}-${session.startDate}-${session.endDate}`
     : 'none'
 
-  // Header badge shows where the INITIAL timeframe's data came from.
-  const sessionSource = session ? (session.sources[session.timeframe] ?? 'cache') : 'cache'
+  // Header badge shows where the clock (M1) data came from.
+  const sessionSource = session ? session.source : 'cache'
   const closedTradesCount = orders.filter((o) => o.status === 'closed').length
 
   return (

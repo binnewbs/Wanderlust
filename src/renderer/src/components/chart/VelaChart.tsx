@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { VelaWorkspace, type VelaWorkspaceOptions } from '@luxalgo/vela/workspace'
 import type { SerializedDrawing, VisibleRange } from '@luxalgo/vela'
 import type { Timeframe } from '@shared/timeframes'
-import { indexAtOrAfter, sessionBaseCandles, useSessionStore } from '@/store/session'
+import { indexAtOrAfter, sessionClockCandles, useSessionStore } from '@/store/session'
 import type { PositionSelection } from '@/store/trading'
 import {
   PLAYBACK_WINDOW_BARS,
@@ -365,7 +365,7 @@ export default function VelaChart({ symbol, timeframe }: VelaChartProps): React.
       const req = state.viewRequest
       if (!req || req === prev.viewRequest) return
       const session = state.session
-      const base = session ? sessionBaseCandles(session) : []
+      const base = session ? sessionClockCandles(session) : []
       if (base.length === 0) {
         state.clearViewRequest()
         return

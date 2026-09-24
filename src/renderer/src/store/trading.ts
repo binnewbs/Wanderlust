@@ -51,6 +51,10 @@ export interface Order {
   previewSize?: number
   /** Session index at submission — candles at/before it can never fill this. */
   submissionIndex: number
+  /** Clock time (M1 close, ms) at submission. The index above is a derived
+   *  cursor; this timestamp is the durable fact, so a saved session can be
+   *  re-based onto a different clock without losing a pending order. */
+  submissionTime?: number
   status: OrderStatus
   /** Actual entry price once filled (market = bar open, limit/stop = order price). */
   fillPrice?: number
