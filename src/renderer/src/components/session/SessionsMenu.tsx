@@ -319,8 +319,8 @@ export default function SessionsMenu({
           </EmptyMedia>
           <EmptyTitle>No session yet</EmptyTitle>
           <EmptyDescription>
-            Download a market range from Dukascopy (cached locally for reuse) and replay it on the
-            chart. Your data stays on this machine.
+            Download a market range from Dukascopy with automatic HistData fallback (cached locally
+            for reuse) and replay it on the chart. Your data stays on this machine.
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent>

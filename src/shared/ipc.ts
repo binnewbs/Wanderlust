@@ -5,7 +5,7 @@
  */
 
 export const IpcChannels = {
-  /** main <- renderer: request a Dukascopy download (cache-first, then fetch) */
+  /** main <- renderer: cache-first market-data download (Dukascopy → HistData) */
   DownloadData: 'data:download',
   /** main <- renderer: query candles already stored in the local SQLite cache */
   GetCachedData: 'data:get-cached',
@@ -23,7 +23,18 @@ export const IpcChannels = {
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels]
 
-/** A user-facing request for market data, echoing the dukascopy-node options. */
+/** Network data provider a candle came from. `cache` is not a provider. */
+export type DataSource = 'dukascopy' | 'histdata'
+
+/**
+ * How one download was satisfied. `cache` means every day was already
+ * stored; `mixed` means cache days were combined with one or more network
+ * providers (or the range itself mixes providers). The `sources` field on the
+ * result lists the actual providers either way.
+ */
+export type DownloadSource = 'cache' | DataSource | 'mixed' | 'none'
+
+/** A user-facing request for market data. Instrument ids stay Dukascopy-style. */
 export interface DownloadRequest {
   /** Dukascopy instrument id, lowercase (e.g. 'eurusd', 'gbpusd', 'xauusd', 'btcusd') */
   symbol: string
@@ -75,8 +86,16 @@ export interface DownloadResult {
   timeframe: string
   /** Number of candles delivered by this call */
   candles: number
-  /** Where the candles came from this time */
-  source: 'cache' | 'dukascopy' | 'mixed' | 'none'
+  /** How the range was satisfied (cache/network/mixed) */
+  source: DownloadSource
+  /** Actual network providers represented in the returned range */
+  sources: DataSource[]
+  /**
+   * Requested trading days (ISO) that no provider could supply and which are
+   * therefore MISSING from this range. Non-empty means the result is a partial
+   * range — typically because the most recent day is not published yet.
+   */
+  missingDays: string[]
   message?: string
 }
 
@@ -93,8 +112,12 @@ export interface TimeframeDownloadResult {
   timeframe: string
   /** Number of candles delivered for this timeframe */
   candles: number
-  /** Where the candles came from this time */
-  source: 'cache' | 'dukascopy' | 'mixed' | 'none'
+  /** How the range was satisfied (cache/network/mixed) */
+  source: DownloadSource
+  /** Actual network providers represented in the returned range */
+  sources: DataSource[]
+  /** Requested trading days (ISO) no provider could supply — see DownloadResult */
+  missingDays: string[]
   /** Set when this timeframe failed (the batch continues with the rest) */
   error?: string
 }
@@ -114,6 +137,8 @@ export interface CacheEntry {
   symbol: string
   timeframe: string
   candles: number
+  /** Network providers represented in this (symbol, timeframe) group. */
+  sources: DataSource[]
   /** Earliest cached UTC timestamp (ms) */
   first: number | null
   /** Latest cached UTC timestamp (ms) */

@@ -2,7 +2,13 @@ import { join } from 'path'
 import { statSync } from 'fs'
 import { app } from 'electron'
 import Database from 'better-sqlite3'
-import type { Candle, CacheEntry, CacheStats, SingleTimeframeRequest } from '../shared/ipc'
+import type {
+  Candle,
+  CacheEntry,
+  CacheStats,
+  DataSource,
+  SingleTimeframeRequest
+} from '../shared/ipc'
 
 /**
  * SQLite cache for downloaded candles.
@@ -16,6 +22,10 @@ import type { Candle, CacheEntry, CacheStats, SingleTimeframeRequest } from '../
 // `timestamp`. The plan's schema only keyed on (symbol, timestamp), but two
 // timeframes of the same symbol can share a timestamp (e.g. the h1 candle at
 // 10:00 and the m1 candle at 10:00) and would overwrite each other.
+//
+// `source` records which network provider supplied the row. It is metadata,
+// not part of the key: a newer download of the same candle replaces the old
+// one and takes ownership of that timestamp.
 export const CACHE_SCHEMA = `
   CREATE TABLE IF NOT EXISTS cached_candles (
     symbol    TEXT    NOT NULL,
@@ -26,6 +36,7 @@ export const CACHE_SCHEMA = `
     low       REAL    NOT NULL,
     close     REAL    NOT NULL,
     volume    REAL    NOT NULL,
+    source    TEXT    NOT NULL DEFAULT 'dukascopy',
     PRIMARY KEY (symbol, timeframe, timestamp)
   )
 `
@@ -40,7 +51,7 @@ let dbFilePath: string | null = null
  * portable per-table byte counter, and the storage UI labels the figure
  * "approx." while the totals use the real file sizes.
  */
-const CACHE_BYTES_PER_CANDLE = 112
+const CACHE_BYTES_PER_CANDLE = 128
 
 /** Resolves (and caches) the cache database's path without opening it. */
 function resolveDbFilePath(): string {
@@ -54,11 +65,25 @@ export function getDb(): Database.Database {
     db = new Database(resolveDbFilePath())
     db.pragma('journal_mode = WAL')
     db.exec(CACHE_SCHEMA)
+    ensureSourceColumn(db)
     db.exec(
       'CREATE INDEX IF NOT EXISTS idx_cached_lookup ON cached_candles (symbol, timeframe, timestamp)'
     )
   }
   return db
+}
+
+/**
+ * Adds candle provenance to databases created by older Wanderlust builds.
+ * Those caches contain Dukascopy data only, so the existing rows get that as
+ * their default. `CREATE TABLE IF NOT EXISTS` does not add columns to an
+ * already-existing table, hence this explicit one-way migration.
+ */
+function ensureSourceColumn(handle: Database.Database): void {
+  const columns = handle.pragma('table_info(cached_candles)') as Array<{ name: string }>
+  if (!columns.some((column) => column.name === 'source')) {
+    handle.exec("ALTER TABLE cached_candles ADD COLUMN source TEXT NOT NULL DEFAULT 'dukascopy'")
+  }
 }
 
 /** Closes the database handle (called on app quit). Safe to call multiple times. */
@@ -79,6 +104,11 @@ export function dateRangeToMs(startDate: string, endDate: string): [number, numb
   return [start, end]
 }
 
+/** A cached candle plus the network provider that supplied it. */
+export interface SourcedCandle extends Candle {
+  source: DataSource
+}
+
 /** Reads candles between two UTC milliseconds (inclusive), ordered by time. */
 export function queryCandlesRange(
   symbol: string,
@@ -94,6 +124,28 @@ export function queryCandlesRange(
         ORDER BY timestamp ASC`
     )
     .all(symbol.toLowerCase(), timeframe, fromMs, toMs) as Candle[]
+  return rows
+}
+
+/**
+ * Same read as {@link queryCandlesRange}, but keeps each row's provider.
+ * The download pipeline uses this to report and re-persist provenance when a
+ * merged range combines cached Dukascopy days with HistData fallback days.
+ */
+export function querySourcedCandlesRange(
+  symbol: string,
+  timeframe: string,
+  fromMs: number,
+  toMs: number
+): SourcedCandle[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT timestamp, open, high, low, close, volume, source
+         FROM cached_candles
+        WHERE symbol = ? AND timeframe = ? AND timestamp BETWEEN ? AND ?
+        ORDER BY timestamp ASC`
+    )
+    .all(symbol.toLowerCase(), timeframe, fromMs, toMs) as SourcedCandle[]
   return rows
 }
 
@@ -126,17 +178,26 @@ export function countCandles(request: SingleTimeframeRequest): number {
   return countCandlesRange(request.symbol, request.timeframe, from, to)
 }
 
+/** Per-candle provider, or a resolver when one upsert mixes providers. */
+export type CandleSource = DataSource | ((candle: Candle) => DataSource)
+
 /**
  * Bulk upserts candles into the cache. Returns the number of rows written.
- * (Used by Phase 2's download pipeline; exposed now so the storage layer is
- * complete and testable.)
+ * Pass a resolver when a merged download contains both Dukascopy and HistData
+ * days so re-persisting the merged range cannot erase per-row provenance.
  */
-export function insertCandles(symbol: string, timeframe: string, candles: Candle[]): number {
+export function insertCandles(
+  symbol: string,
+  timeframe: string,
+  candles: Candle[],
+  source: CandleSource = 'dukascopy'
+): number {
   if (candles.length === 0) return 0
+  const resolveSource = typeof source === 'function' ? source : (): DataSource => source
   const stmt = getDb().prepare(
     `INSERT OR REPLACE INTO cached_candles
-       (symbol, timeframe, timestamp, open, high, low, close, volume)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+       (symbol, timeframe, timestamp, open, high, low, close, volume, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
   const insertAll = getDb().transaction((rows: Candle[]) => {
     for (const c of rows) {
@@ -148,7 +209,8 @@ export function insertCandles(symbol: string, timeframe: string, candles: Candle
         c.high,
         c.low,
         c.close,
-        c.volume
+        c.volume,
+        resolveSource(c)
       )
     }
   })
@@ -164,7 +226,8 @@ export function getCacheSummary(): CacheEntry[] {
               timeframe,
               COUNT(*)              AS candles,
               MIN(timestamp)        AS first,
-              MAX(timestamp)        AS last
+              MAX(timestamp)        AS last,
+              GROUP_CONCAT(DISTINCT source) AS sources
          FROM cached_candles
         GROUP BY symbol, timeframe
         ORDER BY symbol ASC, timeframe ASC`
@@ -175,8 +238,18 @@ export function getCacheSummary(): CacheEntry[] {
     candles: number
     first: number
     last: number
+    sources: string
   }>
-  return rows.map((r) => ({ ...r }))
+  return rows.map((row) => ({
+    symbol: row.symbol,
+    timeframe: row.timeframe,
+    candles: row.candles,
+    first: row.first,
+    last: row.last,
+    sources: row.sources
+      .split(',')
+      .filter((source): source is DataSource => source === 'dukascopy' || source === 'histdata')
+  }))
 }
 
 /** On-disk sizes of the cache database and its WAL sidecar files. */

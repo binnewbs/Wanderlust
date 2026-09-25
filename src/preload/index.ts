@@ -17,8 +17,9 @@ import {
 // Exposed as `window.api.*` so the React app never touches ipcRenderer directly.
 const api = {
   /**
-   * Triggers a cache-first download of a date range. Resolves with a result
-   * describing the outcome; progress is streamed via `onDownloadProgress`.
+   * Triggers a cache-first download of a date range (Dukascopy primary,
+   * HistData fallback). Resolves with a result describing the outcome;
+   * progress is streamed via `onDownloadProgress`.
    */
   downloadData: (request: DownloadRequest): Promise<DownloadResult> =>
     ipcRenderer.invoke(IpcChannels.DownloadData, request),

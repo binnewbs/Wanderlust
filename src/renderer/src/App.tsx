@@ -20,7 +20,16 @@ import SettingsMenu from '@/components/settings/SettingsMenu'
 const sourceStyles: Record<string, string> = {
   cache: 'border-chart-2/40 bg-chart-2/10 text-chart-2',
   dukascopy: 'border-chart-4/40 bg-chart-4/10 text-chart-4',
+  histdata: 'border-chart-3/40 bg-chart-3/10 text-chart-3',
   mixed: 'border-chart-5/40 bg-chart-5/10 text-chart-5'
+}
+
+/** Tooltip text so a bare `histdata` / `mixed` badge explains itself. */
+const sourceTitles: Record<string, string> = {
+  cache: 'Every candle in this range was already in the local cache',
+  dukascopy: 'Downloaded from the Dukascopy datafeed',
+  histdata: 'Downloaded from HistData (Dukascopy was unavailable)',
+  mixed: 'Merged from the local cache and one or more network sources'
 }
 
 export default function App(): React.JSX.Element {
@@ -116,6 +125,7 @@ export default function App(): React.JSX.Element {
               </span>
               <Badge
                 variant="outline"
+                title={sourceTitles[sessionSource]}
                 className={`shrink-0 px-1.5 py-px text-[9px] font-medium uppercase ${sourceStyles[sessionSource] ?? ''}`}
               >
                 {sessionSource}

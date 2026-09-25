@@ -407,7 +407,7 @@ export default function SettingsMenu({ onBack }: SettingsMenuProps): React.JSX.E
                   <EmptyTitle>No cached data</EmptyTitle>
                   <EmptyDescription>
                     Nothing has been downloaded yet. Starting a session fetches its range from
-                    Dukascopy and stores it here for instant replays.
+                    Dukascopy (with HistData fallback) and stores it here for instant replays.
                   </EmptyDescription>
                 </EmptyHeader>
               </Empty>
@@ -417,6 +417,7 @@ export default function SettingsMenu({ onBack }: SettingsMenuProps): React.JSX.E
                   <TableRow>
                     <TableHead>Instrument</TableHead>
                     <TableHead>Timeframe</TableHead>
+                    <TableHead>Source</TableHead>
                     <TableHead className="text-right">Candles</TableHead>
                     <TableHead>Range (UTC)</TableHead>
                     <TableHead className="text-right">Size (approx.)</TableHead>
@@ -438,6 +439,9 @@ export default function SettingsMenu({ onBack }: SettingsMenuProps): React.JSX.E
                           </span>
                         </TableCell>
                         <TableCell className="font-mono uppercase">{entry.timeframe}</TableCell>
+                        <TableCell className="font-mono text-xs uppercase text-muted-foreground">
+                          {entry.sources.length > 0 ? entry.sources.join(' + ') : 'unknown'}
+                        </TableCell>
                         <TableCell className="text-right font-mono">
                           {formatCount(entry.candles)}
                         </TableCell>
@@ -499,8 +503,8 @@ export default function SettingsMenu({ onBack }: SettingsMenuProps): React.JSX.E
               <AlertTriangle />
               <AlertTitle>This cannot be undone</AlertTitle>
               <AlertDescription>
-                Deleted candles are re-downloaded from Dukascopy the next time a session needs them,
-                which requires an internet connection and takes time.
+                Deleted candles are re-downloaded from Dukascopy (or the HistData fallback) the next
+                time a session needs them, which requires an internet connection and takes time.
               </AlertDescription>
             </Alert>
             <div className="flex flex-wrap items-center justify-end gap-2">

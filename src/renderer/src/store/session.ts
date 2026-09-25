@@ -1,6 +1,11 @@
 import { create } from 'zustand'
 import type { Asset } from '@shared/assets'
-import type { Candle, DownloadBatchResult, DownloadProgressEvent } from '@shared/ipc'
+import type {
+  Candle,
+  DownloadBatchResult,
+  DownloadProgressEvent,
+  DownloadResult
+} from '@shared/ipc'
 import {
   CLOCK_MS,
   CLOCK_TIMEFRAME,
@@ -92,7 +97,7 @@ export interface ActiveSession extends NewSessionInput {
   /** M1 candles of the day(s) before the session, shown BEFORE any session
    *  minute is revealed so a session never starts on a blank chart. */
   clockRunUp: Candle[]
-  /** Where the clock candles came from ('cache' | 'dukascopy' | 'mixed'). */
+  /** How the clock candles were satisfied ('cache' | provider | 'mixed'). */
   source: string
 }
 
@@ -488,6 +493,46 @@ async function fetchRunUpDay(asset: Asset, day: string, remainingMs: number): Pr
  * data a session loads: every coarser timeframe the chart can show is
  * aggregated from these minutes at render time.
  */
+/**
+ * What the caller needs from a download answer, whichever shape the main
+ * process replied with.
+ *
+ * The handler answers a batch (`{ timeframes: [...] }`) for any request that
+ * carries a `timeframes` array and a single result otherwise, so a renderer
+ * that only understands one shape silently reads fields off `undefined` — the
+ * failure that produced "Download failed." and then a `.some` of nothing. Both
+ * shapes are folded into one value here instead of being cast.
+ */
+function readDownloadOutcome(raw: DownloadBatchResult | DownloadResult): {
+  ok: boolean
+  message?: string
+  /** Requested trading days no provider could supply. */
+  missingDays: string[]
+  /** How the range was satisfied, for the session badge. */
+  source: string
+  /** True when at least one timeframe had to hit the network. */
+  usedNetwork: boolean
+} {
+  if ('timeframes' in raw && Array.isArray(raw.timeframes)) {
+    const frames = raw.timeframes
+    return {
+      ok: raw.ok,
+      message: raw.message,
+      missingDays: [...new Set(frames.flatMap((frame) => frame.missingDays ?? []))],
+      source: frames[0]?.source ?? 'cache',
+      usedNetwork: frames.some((frame) => frame.source !== 'cache')
+    }
+  }
+  const single = raw as DownloadResult
+  return {
+    ok: single.ok,
+    message: single.message,
+    missingDays: single.missingDays ?? [],
+    source: single.source,
+    usedNetwork: single.source !== 'cache'
+  }
+}
+
 async function loadClockAndRunUp(
   asset: Asset,
   startDate: string,
@@ -501,12 +546,9 @@ async function loadClockAndRunUp(
     endDate
   }
   const raw = await window.api.downloadData(request)
-  if (!('timeframes' in raw)) {
-    throw new Error(raw.message ?? 'Download failed.')
-  }
-  const res = raw as DownloadBatchResult
-  if (!res.ok) {
-    throw new Error(res.message ?? 'Download failed.')
+  const outcome = readDownloadOutcome(raw)
+  if (!outcome.ok) {
+    throw new Error(outcome.message ?? 'The download failed without reporting a reason.')
   }
 
   const data = await window.api.getCachedData({
@@ -516,19 +558,22 @@ async function loadClockAndRunUp(
     endDate
   })
   if (!data.ok || data.candles.length === 0) {
+    // Name the days nobody could fill. "Weekend or holiday" is only the right
+    // excuse when the range really was one.
     throw new Error(
-      'Dukascopy returned no candles for that range (weekends and holidays have no data). Try a different asset or date range.'
+      outcome.missingDays.length > 0
+        ? `No provider has data for ${outcome.missingDays.join(', ')}. Dukascopy may be blocking this network and HistData's archive stops a few days behind — try an earlier end date.`
+        : 'No market-data provider returned candles for that range (weekends and holidays have no data). Try a different asset or date range.'
     )
   }
 
-  const usedNetwork = res.timeframes.some((tfRes) => tfRes.source !== 'cache')
   const runUp = await collectRunUp(
     asset,
     startDate,
-    usedNetwork ? RUNUP_NETWORK_BUDGET_MS : RUNUP_CACHEONLY_BUDGET_MS,
+    outcome.usedNetwork ? RUNUP_NETWORK_BUDGET_MS : RUNUP_CACHEONLY_BUDGET_MS,
     (day, remaining) => fetchRunUpDay(asset, day, remaining)
   )
-  return { candles: data.candles, runUp, source: res.timeframes[0]?.source ?? 'cache' }
+  return { candles: data.candles, runUp, source: outcome.source }
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({

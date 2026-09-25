@@ -9,6 +9,7 @@ import {
   type DownloadProgressEvent,
   type DownloadRequest,
   type DownloadResult,
+  type DownloadSource,
   type TimeframeDownloadResult,
   type VacuumCacheResult
 } from '../shared/ipc'
@@ -22,7 +23,20 @@ import {
   insertCandles,
   vacuumCache
 } from './db'
-import { fetchFromDukascopy } from './dukascopy'
+import { fetchMarketData, type FetchResult } from './dukascopy'
+
+/**
+ * True when the request must be answered with a `DownloadBatchResult`.
+ *
+ * ANY explicit `timeframes` array qualifies — including a one-element one. The
+ * session store always sends `timeframes: ['m1']` and reads the batch shape
+ * back, so collapsing a single-entry array into single-timeframe mode left it
+ * with a response it could not read, and the only thing it could say was a bare
+ * "Download failed." A request carrying just `timeframe` stays single-mode.
+ */
+export function isBatchRequest(req: DownloadRequest): boolean {
+  return (req.timeframes?.length ?? 0) > 0
+}
 
 /** Validates an unknown payload from the renderer into a DownloadRequest. */
 function toDownloadRequest(value: unknown): DownloadRequest | null {
@@ -89,9 +103,9 @@ async function downloadTimeframe(
     message: `${label}: Checking local cache [${startDate} → ${endDate}]…`,
     percent: scaledPercent(undefined)
   })
-  let result
+  let result: FetchResult
   try {
-    result = await fetchFromDukascopy(req, (message, percent) =>
+    result = await fetchMarketData(req, (message, percent) =>
       sendProgress(event, {
         phase: 'downloading',
         timeframe,
@@ -104,12 +118,16 @@ async function downloadTimeframe(
       timeframe,
       candles: 0,
       source: 'none',
+      sources: [],
+      missingDays: [],
       error: err instanceof Error ? err.message : String(err)
     }
   }
-  const { candles, fetchedDays, cachedDays } = result
+  const { candles, candleSources, fetchedDays, cachedDays, emptyDays } = result
 
-  // Persist the merged range (upsert — idempotent for cached rows).
+  // Persist the merged range (upsert — idempotent for cached rows). The
+  // resolver keeps per-candle provenance when Dukascopy and HistData days are
+  // combined in one range.
   if (fetchedDays > 0) {
     sendProgress(event, {
       phase: 'saving',
@@ -117,24 +135,50 @@ async function downloadTimeframe(
       message: `${label}: Saving ${candles.length} candles to local cache…`,
       percent: scaledPercent(undefined)
     })
-    insertCandles(symbol, timeframe, candles)
+    insertCandles(symbol, timeframe, candles, (candle) =>
+      candleSources.get(candle.timestamp) === 'histdata' ? 'histdata' : 'dukascopy'
+    )
   }
 
-  const source: TimeframeDownloadResult['source'] =
-    fetchedDays === 0 ? 'cache' : cachedDays === 0 ? 'dukascopy' : 'mixed'
+  const sources = [...new Set(candleSources.values())]
+  // Days no provider had. A silently short range is the most confusing outcome
+  // this download can produce, so the days are always named out loud.
+  const missingNote =
+    emptyDays.length === 0
+      ? ''
+      : emptyDays.length === 1
+        ? ` No provider has data for ${emptyDays[0]} — that day is missing from the range (feeds usually lag by a day or two).`
+        : ` No provider has data for ${emptyDays.join(', ')} — those days are missing from the range (feeds usually lag by a day or two).`
+  // `none` = every fetched day was a quiet day (weekend/holiday), so no
+  // provider actually delivered a candle for this range.
+  const source: DownloadSource =
+    fetchedDays === 0
+      ? 'cache'
+      : sources.length === 0
+        ? 'none'
+        : cachedDays === 0 && sources.length === 1
+          ? sources[0]
+          : 'mixed'
+  const providerLabel = sources.length === 1 ? sources[0] : sources.join(' + ')
+  // `none` with named days is NOT a weekend/holiday — those days were trading
+  // days nobody could fill, which needs a different (and honest) explanation.
   const message =
-    source === 'cache'
-      ? `${label}: ${candles.length} candles loaded from cache.`
-      : source === 'dukascopy'
-        ? `${label}: ${candles.length} candles downloaded from Dukascopy and cached.`
-        : `${label}: ${candles.length} candles merged (${cachedDays} cached day(s) + ${fetchedDays} freshly downloaded) and cached.`
+    source === 'none'
+      ? emptyDays.length > 0
+        ? `${label}: no candles for this range — no provider has data for ${emptyDays.join(', ')}. The most recent days are often not published yet; try an earlier end date.`
+        : `${label}: no candles for this range (weekend or holiday).`
+      : source === 'cache'
+        ? `${label}: ${candles.length} candles loaded from cache${sources.length > 0 ? ` (${providerLabel})` : ''}.${missingNote}`
+        : source === 'mixed'
+          ? `${label}: ${candles.length} candles merged (${cachedDays} cached day(s) + ${fetchedDays} downloaded from ${providerLabel}) and cached.${missingNote}`
+          : `${label}: ${candles.length} candles downloaded from ${providerLabel} and cached.${missingNote}`
   sendProgress(event, {
     phase: 'ready',
     timeframe,
     message,
     percent: scaledPercent(100)
   })
-  return { timeframe, candles: candles.length, source }
+  return { timeframe, candles: candles.length, source, sources, missingDays: emptyDays }
 }
 
 /**
@@ -244,13 +288,15 @@ export function registerIpcHandlers(): void {
           timeframe: '?',
           candles: 0,
           source: 'none',
+          sources: [],
+          missingDays: [],
           message: 'Invalid download request.'
         }
       }
 
       const { symbol, startDate, endDate } = req
       const timeframes = req.timeframes ?? (req.timeframe ? [req.timeframe] : [])
-      const batch = (req.timeframes?.length ?? 0) > 1
+      const batch = isBatchRequest(req)
 
       if (!batch) {
         // ---- single-timeframe mode (charts, E2E, one-off fetches) ----
@@ -271,6 +317,8 @@ export function registerIpcHandlers(): void {
             timeframe: result.timeframe,
             candles: countCandles({ symbol, timeframe: result.timeframe, startDate, endDate }),
             source: 'none',
+            sources: [],
+            missingDays: result.missingDays,
             message: result.error
           }
         }
@@ -279,7 +327,9 @@ export function registerIpcHandlers(): void {
           symbol,
           timeframe: result.timeframe,
           candles: result.candles,
-          source: result.source
+          source: result.source,
+          sources: result.sources,
+          missingDays: result.missingDays
         }
       }
 
@@ -309,6 +359,9 @@ export function registerIpcHandlers(): void {
 
       const failed = results.filter((r) => r.error)
       const totalCandles = results.reduce((sum, r) => sum + r.candles, 0)
+      // Days every provider came up empty on — the same set for each timeframe
+      // (they all share one M1 download), so take the first non-empty list.
+      const missingDays = results.find((r) => r.missingDays.length > 0)?.missingDays ?? []
       if (failed.length > 0) {
         const message = `Failed to download: ${failed.map((f) => `${f.timeframe} (${f.error})`).join(', ')}`
         sendProgress(event, { phase: 'error', message })
@@ -322,7 +375,11 @@ export function registerIpcHandlers(): void {
       }
       const message = `Downloaded ${symbol}: ${results
         .map((r) => `${r.timeframe}=${r.candles} (${r.source})`)
-        .join(', ')}.`
+        .join(', ')}.${
+        missingDays.length > 0
+          ? ` No provider has data for ${missingDays.join(', ')} — those days are missing from the range (feeds usually lag by a day or two).`
+          : ''
+      }`
       sendProgress(event, { phase: 'ready', message, percent: 100 })
       return { ok: true, symbol, timeframes: results, totalCandles, message }
     }

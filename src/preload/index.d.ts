@@ -14,9 +14,9 @@ import type {
 
 export interface WanderlustApi {
   /**
-   * Triggers a cache-first download of a date range (Dukascopy fetch in Phase 2).
-   * Sends a `DownloadBatchResult` when `request.timeframes` lists more than one
-   * timeframe; a plain `DownloadResult` otherwise.
+   * Triggers a cache-first download of a date range (Dukascopy primary,
+   * HistData fallback). Sends a `DownloadBatchResult` when `request.timeframes`
+   * lists more than one timeframe; a plain `DownloadResult` otherwise.
    */
   downloadData: (request: DownloadRequest) => Promise<DownloadResult | DownloadBatchResult>
   /** Reads candles already stored in the local SQLite cache for a range. */
